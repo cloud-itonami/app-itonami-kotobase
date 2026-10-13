@@ -171,7 +171,7 @@ that plane, alongside SQL, openCypher, SPARQL, GraphQL and Gremlin** — a good
 one, and the right choice when the caller's language is already
 Datalog-shaped. It is not the layer the others are built on, and Datalog is
 not the IR they are translated into: see
-[`kotobase-query`](https://github.com/kotoba-lang/kotobase-query)'s
+[`ayatori`](https://github.com/kotoba-lang/ayatori)'s (formerly `kotobase-query`)
 `materialize` + access-path contract.
 
 **Why the distinction is worth stating.** "kotoba : kotobase = Clojure :
@@ -484,9 +484,9 @@ encryption, CID identity schemes, and a columnar lake projection.
 
 ## Consumers
 
-The cloud API workers [local-murakumo](https://github.com/gftdcojp/local-murakumo)
-(formerly `cloud-murakumo`, renamed 2026-07-04) and
-[cloud-manimani](https://github.com/gftdcojp/cloud-manimani) (cljs Cloudflare
+The cloud API workers [cloud-murakumo-api](https://github.com/network-awai/cloud-murakumo-api)
+(formerly `gftdcojp/local-murakumo`, earlier `cloud-murakumo`) and
+[cloud-manimani](https://github.com/network-awai/cloud-manimani) (cljs Cloudflare
 Workers) inject a `fetch`-based `xrpc` and serve the app API straight off the
 `:kotobase` store; the desktop/CLI apps use `:local`.
 
