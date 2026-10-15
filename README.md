@@ -209,6 +209,56 @@ Neither previously cross-referenced the other two by name alone.
 
 ---
 
+## Where this fits / quick use
+
+Stack position: kotoba (language, authority) -> itonami (jobs) -> murakumo
+(compute) -> **kotobase (state/results)** -> optional anchor
+([`kotobase-anchor-fevm`](https://github.com/kotoba-lang/kotobase-anchor-fevm)).
+The private-network layer, AWAI DNA (DNA CID = network id, signed per-agent
+source chains), is a proposed spec only
+(network-awai/network-awai-apex PR #14, branch `dna-private-network-spec`,
+`awai-dna/`). Interactive figure:
+<https://kotoba-lang.org/anatomy/kotoba-murakumo/>.
+
+Role: kotobase is the state and result plane. Canonical truth is a signed,
+immutable commit DAG addressed by CID; a write returns a new commit CID, and
+reads name a commit CID. Results and receipts of murakumo jobs are meant to land
+here as commits, where anyone holding the CID can re-verify them. S3/R2 and IPFS
+are only untrusted block transports: they store bytes, and every block is
+re-hashed on read, so they cannot choose or alter truth. No mutable ref service
+is needed for correctness (see
+[`docs/storage-architecture.md`](docs/storage-architecture.md)). The anchor, if
+used, is never on the query path.
+
+Quick use with `kotobase.core` (`open`, `head`, `at-cid`, `transact!`,
+`commit-at!`, `datoms`, `q`, `query`, `pull`). On the JVM the facade is
+synchronous; the ClojureScript/Worker facade returns Promises and expects
+Promise-returning `:encrypt-fn`, `:decrypt-fn` and `:blind-fn`. The storage
+provider is passed in as `:storage`; this one is in-memory. The identity
+crypto below is for a demo only. This was run with the repo's own tooling
+(`kbb`, offline) and prints the values shown:
+
+```clojure
+(require '[kotobase.core :as kb] '[kotobase.storage.memory :as memory])
+(def db (kb/open {:storage (memory/memory-store)
+                  :encrypt-fn #(js/Promise.resolve %)   ; demo: no encryption
+                  :decrypt-fn #(js/Promise.resolve %)
+                  :blind-fn   #(js/Promise.resolve (pr-str %))
+                  :visible?   (constantly true)}))
+(-> (kb/transact! db [["alice" "role" "admin"] ["alice" "team" "core"]])
+    (.then (fn [commit] (println "commit CID:" commit) (kb/q db ["alice" "role" nil])))
+    (.then (fn [rows] (println rows) (kb/datoms db)))
+    (.then println))
+;; commit CID: bafyrei...
+;; #{{:s "alice", :p "role", :o "admin"}}
+;; [{:e "alice", :a "role", :v_edn "\"admin\"", :added true} {:e "alice", :a "team", ...}]
+```
+
+`(kb/commit-at! db expected-basis tx-data)` writes at an exact basis (`nil` for
+the first commit) and `(kb/at-cid db commit-cid)` gives a read-only view at that
+commit. `query` (Datalog, optional inputs) and `pull` (`[db entity pattern]`)
+are exported with those signatures but were not exercised in the run above.
+
 ## Lisp machine architecture
 
 AiueOS is the OS for a modern Kotoba Lisp machine in development. Kototama
