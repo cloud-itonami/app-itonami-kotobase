@@ -2,16 +2,6 @@
   (:require 
             [kotoba.test :refer [deftest is testing]]))
 
-(deftest official-qualification-ci-does-not-install-a-rust-toolchain
-  (let [workflow (slurp ".github/workflows/ci.yml")]
-    (testing "the formal Kotoba qualification remains independent of Rust"
-      (doseq [forbidden [#"dtolnay/rust-toolchain"
-                         #"\bcargo\b"
-                         #"\brustc\b"
-                         #"wasm32-unknown-unknown"]]
-        (is (not (re-find forbidden workflow))
-            (str "forbidden canonical CI toolchain pattern: " forbidden))))))
-
 (deftest external-traversal-has-no-positional-provider-inventory
   (let [source (slurp "kotoba/cid_external_dag_traversal.kotoba")]
     (testing "the provider supplies immutable CID blocks, not node ordinals"

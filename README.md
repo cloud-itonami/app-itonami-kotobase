@@ -23,8 +23,6 @@ See [`docs/disclosure-grants.edn`](docs/disclosure-grants.edn) for the contract
 and remaining rollout gates. Ayatori's `recipient-decryptor[-async]` consumes
 this protocol at the existing `:decrypt-fn` seam.
 
-[![CI](https://github.com/kotoba-lang/kotobase/actions/workflows/ci.yml/badge.svg)](https://github.com/kotoba-lang/kotobase/actions/workflows/ci.yml)
-
 The primary API is now `kotobase.core`: `open`, `transact!`, `datoms`, `q`,
 `query`, and `pull`. The official `kotobase.net` / `kotoba-lang/kotobase`
 correctness path is a signed immutable CID commit DAG executed by Kotoba native
@@ -490,8 +488,8 @@ revision-checked transaction, preventing fractured code-graph commits. Legacy
 IStore backends retain the collection-by-collection compatibility path, with
 appends flushed in program order.
 Use `promise-runtime` in ClojureScript; other completion models can inject the
-same `resolve`/`then`/`all` algebra. CI compiles and executes this path under
-Node as real ClojureScript rather than relying only on the synchronous JVM test.
+same `resolve`/`then`/`all` algebra. CI no longer compiles or executes this
+path: the JVM and nbb are not part of CI/CD (see [AGENTS.md](AGENTS.md)).
 
 `kotobase.causal-commit`, `kotobase.guarded`, and
 `kotobase.authorized-query` also have a real Worker completion path. A remote
