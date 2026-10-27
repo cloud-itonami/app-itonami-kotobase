@@ -10,50 +10,77 @@
  :deps {
         ;; kotoba.lang.error replaced clojure.lang.ExceptionInfo here (2026-09-25).
         ;; An explicit floor: tools.deps takes the NEWEST sha it is shown.
-        io.github.kotoba-lang/error {:git/sha "838dec56c9a5b74f9eec825a2fb28bda157f8cd3"}
+        io.github.kotoba-lang/error
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.error"}
         ;; kotoba.bytes replaced java.util.Base64 here (2026-09-24). An explicit
         ;; floor: tools.deps takes the NEWEST sha it is shown.
-        io.github.kotoba-lang/bytes {:git/sha "d5259f35ab7c4f5a66e63ca29ed4dcf7ba3f1ac5"}
+        io.github.kotoba-lang/bytes
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.bytes"}
         ;; kotoba.io replaced java.nio.file.Files here (2026-09-24). An explicit
         ;; floor: temp-dir temp-file read-all-bytes write-bytes write-string
         ;; delete-if-exists are in kotoba.io from this sha, and tools.deps takes
         ;; the NEWEST sha it is shown.
-        io.github.kotoba-lang/io {:git/sha "1b60ca825c1e705bd195f857ca4549133653a9f3"}
+        io.github.kotoba-lang/io
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.io"}
         ;; kotoba.lang.coll replaced clojure.set here (2026-09-24). An explicit
         ;; floor: kotoba.lang.coll carries clojure.set's union/intersection/
         ;; difference/map-invert from 0ffd5f6, and tools.deps takes the NEWEST
         ;; sha it is shown.
-        io.github.kotoba-lang/coll {:git/sha "f74e248f0a07e8ae572885f50fab6bdb39dc24be"}
+        io.github.kotoba-lang/coll
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.coll"}
         ;; kotoba.lang.edn replaced clojure.edn here (2026-09-23). An explicit floor:
         ;; tools.deps takes the NEWEST sha it is shown, and kbb resolves git deps
         ;; only from nbb.edn, so every project file this repo has names it.
-        io.github.kotoba-lang/edn {:git/sha "79dba32c8892058842c57783f06a2dfe4601aeb0"}
+        io.github.kotoba-lang/edn
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.edn"}
        ;; kotoba.test (clojure.test-compatible surface), not clojure.test --
         ;; scripts/migrate-clojure-test-to-kotoba-test.cljk. Explicit floor.
-        io.github.kotoba-lang/test {:git/url "https://github.com/kotoba-lang/test.git"
-                                    :git/sha "2ab4885f99fd25552d380d0f6b0b54c5a72eb7ae"}
+        io.github.kotoba-lang/test
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.test"}
         ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
         ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
         ;; this repo silently rides whatever a sibling happens to name.
-        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
-       io.github.kotoba-lang/security {:git/url "https://github.com/kotoba-lang/security.git"
-                                        :git/sha "b4ff9d8a56263030bc92539b101e1eeb2dbfce39"}
-        io.github.kotoba-lang/abi {:git/url "https://github.com/kotoba-lang/abi.git"
-                                   :git/sha "4dd0b7b9898cec5432bbe60c2904c1546e5f524a"}
+        io.github.kotoba-lang/text
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.text"}
+       io.github.kotoba-lang/security
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.security"}
+        io.github.kotoba-lang/abi
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.abi"}
         io.github.kotoba-lang/identity
-        {:git/url "https://github.com/kotoba-lang/identity.git"
-         :git/sha "6e4a07eaf44e3dbebfb4b340fd4f11448490f71f"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.identity"}
         io.github.kotoba-lang/grant
-        {:git/url "https://github.com/kotoba-lang/grant.git"
-         :git/sha "557142a5592a08dac274c9b4a5c83cc509ffa103"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.grant"}
         ;; The transitive arrangement/prolly path still names eec3ee8, whose
         ;; reader-conditional ns form is not valid under the real
         ;; ClojureScript compiler. Keep the Worker build on the fleet's
         ;; qualified io-multiformats pin; this is a direct compile boundary,
         ;; not a second implementation of CID primitives.
         io.github.kotoba-lang/io-multiformats
-        {:git/url "https://github.com/kotoba-lang/io-multiformats.git"
-         :git/sha "561fe7dfada3db852b127f06d41750dabd3cead9"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.ioMultiformats"}
         ;; `kotoba.value.codec` — the canonical `kotoba.value.v1` codec and the
         ;; CIDv1 DAG-CBOR logical address of an admitted value. Direct because
         ;; `kotobase.execution-identity` names it: the execution contract's
@@ -63,15 +90,17 @@
         ;; the resolver already selects here, so no new diamond is introduced;
         ;; it is `identical` to io-ipld's main.
         io.github.kotoba-lang/io-ipld
-        {:git/url "https://github.com/kotoba-lang/io-ipld.git"
-         :git/sha "48ba40490cf082a1473986ac757b8e2b214a3d1b"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.ioIpld"}
         ;; kotobase.core delegates to the engine, which speaks the
         ;; provider-neutral storage contract. Concrete providers (postgres, d1,
         ;; s3, ipfs, sqlite) are chosen by the host and passed in as `:storage`;
         ;; none of them are dependencies here.
         io.github.kotoba-lang/kotobase-storage
-        {:git/url "https://github.com/kotoba-lang/kotobase-storage.git"
-         :git/sha "e52ddaad020e7d9f790a1839cf77e69f97ff731e"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/kotoba.kotobaseStorage"}
         io.github.kotoba-lang/kotobase-engine
         {:git/url "https://github.com/kotoba-lang/kotobase-engine.git"
          :git/sha "b8b163e889341cdf49217570380872e0575fcbdd"}}
@@ -94,8 +123,9 @@
    :replace-deps
    {org.clojure/clojure {:mvn/version "1.12.0"}
     io.github.kotoba-lang/org-nist-sha2
-    {:git/url "https://github.com/kotoba-lang/org-nist-sha2.git"
-     :git/sha "cb67e53e590e0999d741523797729a3d747cda95"}
+        {:git/url "https://github.com/kotoba-lang/kotoba.git"
+         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :deps/root "lib/gov.nist.sha2"}
     io.github.kotoba-lang/compiler
     {:git/url "https://github.com/kotoba-lang/compiler.git"
      :git/sha "3febafca47ec89eb7167a7756cdd3fd579686dc3"}
