@@ -437,3 +437,28 @@
       (is (= :missing-host-function
              (reason #(governed/execute! (assoc opts :verify nil))))))
     (is (= [] @journal))))
+
+(deftest bound-execution-requires-admission-before-side-effects
+  (let [events (atom [])
+        opts (options events :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                         :consume-nonce! (fn [_] (swap! events conj [:nonce]) true)})
+        admit (fn [context]
+                (is (= request (:request context)))
+                (is (= manifest (:manifest context)))
+                (swap! events conj [:basis]) true)]
+    (is (= served (:rows (governed/execute-bound! opts admit))))
+    (is (= [:basis :nonce :evaluate :commit] (steps events))))
+  (doseq [answer [false nil :truthy]]
+    (let [events (atom [])
+          opts (options events :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                          :consume-nonce! (fn [_] (swap! events conj [:nonce]) true)})]
+      (is (= :basis-admission-refused
+             (reason #(governed/execute-bound! opts (fn [_] (swap! events conj [:basis]) answer)))))
+      (is (= [:basis] (steps events)))))
+  (let [events (atom [])]
+    (is (= :missing-basis-verifier (reason #(governed/execute-bound! (options events) nil))))
+    (is (empty? @events)))
+  (let [events (atom []) opts (options events :manifest (assoc manifest :signature "bad"))]
+    (is (= :signature-not-verified
+           (reason #(governed/execute-bound! opts (fn [_] (swap! events conj [:basis]) true)))))
+    (is (empty? @events))))
