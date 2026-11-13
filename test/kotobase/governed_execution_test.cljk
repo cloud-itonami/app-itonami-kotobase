@@ -203,6 +203,23 @@
       ;; evaluation, so nothing here reached the evaluator
       (is (= [] (steps journal))))))
 
+(deftest signed-manifest-must-match-before-any-read-or-nonce
+  (doseq [[field value] [[:data/commit "bafy-other"]
+                         [:authority/policy "bafy-other-policy"]
+                         [:authority/epoch 8]]]
+    (let [journal (atom []) calls (atom [])
+          signed (resigned (assoc manifest field value))
+          error (try
+                  (governed/execute!
+                   (options journal :manifest signed
+                            :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                        :consume-nonce! (fn [_] (swap! calls conj :nonce) true)}
+                            :authorize! (fn [q] (swap! calls conj :authorize) (authorize q))))
+                  nil (catch kerror/ExceptionInfo e e))]
+      (is (= :cross-record-mismatch (:kotobase.execution-contract/reason (ex-data error))))
+      (is (= [] @calls) "a mismatched signed manifest spends no nonce and invokes no policy")
+      (is (= [] (steps journal)) "a mismatched signed manifest does not evaluate or commit"))))
+
 (deftest expiry-is-decided-against-the-clock-not-against-the-field-existing
   (let [journal (atom [])
         ledger (nonce-ledger)]

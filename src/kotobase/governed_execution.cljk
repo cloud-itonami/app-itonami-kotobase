@@ -316,6 +316,7 @@
     (verified! :execution-manifest
                (verify (signature-request value-cid request
                                           :execution-manifest manifest)))
+    (contract/validate-manifest-request! manifest request)
     (nonce-verdict! request (consume-nonce! (:nonce request)))
     (let [captured (atom nil)
           admitted (atom false)
@@ -404,6 +405,7 @@
          (-> (then (verify (signature-request value-cid request
                                               :execution-manifest manifest))
                    #(verified! :execution-manifest %))
+             (.then (fn [_] (contract/validate-manifest-request! manifest request)))
              (.then (fn [_] (consume-nonce! (:nonce request))))
              (.then #(nonce-verdict! request %))
              (.then (fn [_] (guarded/read-async!

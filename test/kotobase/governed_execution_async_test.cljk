@@ -178,6 +178,28 @@
                     (:kotobase.authority-window/reason (ex-data error))))
              (done)))))))
 
+(deftest worker-rejects-mismatched-signed-manifest-before-any-read-or-nonce
+  (async done
+    (let [cases [[:data/commit "bafy-other"] [:authority/policy "bafy-other-policy"]
+                 [:authority/epoch 8]]]
+      (-> (js/Promise.all
+           (clj->js
+            (mapv (fn [[field value]]
+                    (let [steps (atom [])
+                          signed (fixture/resigned (assoc fixture/manifest field value))
+                          opts (options nil steps "bafy-basis" :manifest signed
+                                        :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                                    :consume-nonce! (fn [_] (swap! steps conj :nonce) (later true))})]
+                      (-> (governed/execute-async! opts)
+                          (.then (fn [_] (is false "mismatched manifest was served")))
+                          (.catch (fn [e]
+                                    (is (= :cross-record-mismatch
+                                           (:kotobase.execution-contract/reason (ex-data e))))
+                                    (is (= [] @steps) "no nonce, policy, evaluation or commit"))))))
+                  cases)))
+          (.then (fn [_] (done)))
+          (.catch (fn [e] (is false (str "unexpected failure: " e)) (done)))))))
+
 (deftest worker-signature-verification-is-awaited-not-assumed
   (async done
     (let [steps (atom [])]
