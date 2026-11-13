@@ -13,3 +13,5 @@ node basis-async.js
 ```
 
 A first invocation from the repo root inadvertently attempted to fetch the project git dependency `kotobase-engine`; the remote returned repository-not-found and no dependency was downloaded. Running from scratch avoided the project dependency. JVM and Node are reference oracles only, never Native gate, build dependency or fallback. This does not establish Native execution, a product-owned verifier, persistent frontier, or storage durability.
+
+A later same-day negative control found that the async catch originally classified a verifier rejection carrying `:kotobase.query/reason` as a policy denial and called the receipt commit before the guarded read began. The pre-fix trace was `[:basis :commit]`. The candidate marks entry into the guarded read before permitting policy-denial receipt handling. Compiled ClojureScript now leaves that failure at `[:basis]`, while a real policy denial after admission retains `[:basis :nonce :authorize :commit]`. The adapted JVM suite remains 15 tests / 112 assertions. This is a local reference result, not a Native gate.

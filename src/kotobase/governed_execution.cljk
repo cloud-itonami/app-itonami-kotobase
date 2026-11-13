@@ -409,6 +409,7 @@
              consume-nonce! (timing! options)
              captured (atom nil)
              admitted (atom false)
+             guard-started (atom false)
              sink (fn [{:keys [compiled rows]}]
                     (-> (then (plan-digest compiled)
                               #(receipt-async options ids
@@ -432,12 +433,13 @@
                         nil)))
              (.then (fn [_] (consume-nonce! (:nonce request))))
              (.then #(nonce-verdict! request %))
-             (.then (fn [_] (guarded/read-async!
-                             (guarded-request options sink admitted))))
+             (.then (fn [_]
+                      (reset! guard-started true)
+                      (guarded/read-async! (guarded-request options sink admitted))))
              (.then (fn [result] (assoc result :execution/receipt @captured)))
              (.catch
               (fn [error]
-                (if (authority-refusal? error @admitted)
+                (if (and @guard-started (authority-refusal? error @admitted))
                   (-> (then (plan-digest nil)
                             #(receipt-async options ids
                                             (checked-plan-digest %)

@@ -3,10 +3,10 @@
   "base_revision": "759d4111c1579a1ecb18890516a67f90e3057adb",
   "prior_classpath_manifest": "oracle/awai-174/manifest_inputs.json",
   "source_sha256": {
-    "src/kotobase/governed_execution.cljk": "f2c00351d2d22fd03945ff903e981f719e131dd53463d1208f10d3be77b18164",
+    "src/kotobase/governed_execution.cljk": "1d09b6dc6450c8ea02af9cc75a0fee640ccb57769787a27f3a195829d82faf32",
     "test/kotobase/governed_execution_test.cljk": "e800149d0ca223359131017aef2763ad9ac1638d9611f817e5ce82b887ab0c5f",
     "oracle/awai-174/basis_sync.clj": "9e4e55b4368873aecf88d9f98d47ba06bfcefb8449c69b4234a2a628a9873921",
-    "oracle/awai-174/basis_async.cljs": "f508b13c707826c2c609d78fd821f22e9aa288acec4a1bce849fc34cfd8c02f8"
+    "oracle/awai-174/basis_async.cljs": "08691156c2635097a9d80e731a991e02d4eed9348e842e21e57b3dff9960c305"
   },
   "classpath_overrides": [
     "kotobase/governed_execution.cljc",
