@@ -1,0 +1,39 @@
+(ns kotobase.governed-host
+  "Explicit hosted composition for scoped authority and linked reads.
+
+  This namespace selects no registry, cryptographic provider, clock, storage,
+  policy or identity. Those remain explicit host-owned inputs."
+  (:require [kotobase.authority-commit-attestation :as attestation]
+            [kotobase.causal-commit :as causal]
+            [kotobase.governed-read :as read]))
+
+(defn- reject! [reason]
+  (throw (ex-info "governed host refused" {:kotobase.governed-host/reason reason})))
+
+#?(:clj
+   (defn read-registry-signed-authority!
+     "Execute a linked read using the scoped issuer attestation and commit.
+
+     HOST supplies an authority database and receipt, the signed attestation,
+     a trusted registry, a fixed algorithm, issuer authorization and crypto.
+     The attestation itself determines the exact commit to authenticate; the
+     callback is constructed here, with no caller-supplied verifier override.
+     Registry provenance, identity authentication, current revocation, clock,
+     rollback protection, policy and storage durability remain host obligations.
+     This hosted synchronous entry does not silently substitute for Native."
+     [request basis-config verification-config nonce-config
+      {:keys [authority-database authority-receipt attestation registry algorithm
+              issuer-authorized? verify-with] :as host}]
+     (when-not (and (map? host)
+                    (= #{:authority-database :authority-receipt :attestation :registry
+                         :algorithm :issuer-authorized? :verify-with} (set (keys host))))
+       (reject! :invalid-host-options))
+     (let [verify-commit! (attestation/verifier
+                           {:attestation attestation :registry registry :algorithm algorithm
+                            :issuer-authorized? issuer-authorized? :verify-with verify-with})
+           verify-authority! (causal/decision-receipt-authenticator
+                              authority-database {:commit-cid (:commit-cid attestation)
+                                                  :verify-commit! verify-commit!})]
+       (read/read-registry-linked-persistent!
+        request basis-config verification-config nonce-config
+        {:authority-receipt authority-receipt :verify-authority! verify-authority!}))))
