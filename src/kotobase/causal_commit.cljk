@@ -290,6 +290,29 @@
            (reject! :decision-receipt-mismatch {}))
          true))))
 
+(defn- execution-sink-options! [{:keys [expected-basis-cid receipt-cid-fn] :as options}]
+  (when-not (and (map? options) (= #{:expected-basis-cid :receipt-cid-fn} (set (keys options))))
+    (reject! :invalid-execution-sink-options {}))
+  (when-not (ifn? receipt-cid-fn)
+    (reject! :missing-receipt-cid-function {}))
+  (when-not (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+    (reject! :invalid-expected-basis {}))
+  options)
+
+(defn prepare-execution-receipt
+  "Validate and prepare canonical transaction data; does not write or attest durability.
+
+  The caller owns the provisional block ports and must publish and read back
+  the resulting commit before creating any durable receipt acknowledgement."
+  [receipt {:keys [expected-basis-cid receipt-cid-fn] :as options}]
+  (execution-sink-options! options)
+  (contract/validate-receipt! receipt)
+  (let [receipt-id (receipt-cid-fn receipt)]
+    (when-not (non-empty-string? receipt-id)
+      (reject! :invalid-receipt-cid {}))
+    {:receipt/cid receipt-id :receipt/basis-cid expected-basis-cid
+     :tx-data (transaction-data execution-stream receipt-id expected-basis-cid [receipt])}))
+
 (defn execution-receipt-sink
   "Build the `:commit!` that `kotobase.governed-execution` requires.
 
@@ -304,12 +327,7 @@
   `receipt-cid-fn` is the host's canonical codec. This namespace does not hash
   a printed representation to name a receipt."
   [database {:keys [expected-basis-cid receipt-cid-fn] :as options}]
-  (when-not (= #{:expected-basis-cid :receipt-cid-fn} (set (keys options)))
-    (reject! :invalid-execution-sink-options {}))
-  (when-not (ifn? receipt-cid-fn)
-    (reject! :missing-receipt-cid-function {}))
-  (when-not (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
-    (reject! :invalid-expected-basis {}))
+  (execution-sink-options! options)
   (fn [receipt]
     (contract/validate-receipt! receipt)
     (let [receipt-id (receipt-cid-fn receipt)]
