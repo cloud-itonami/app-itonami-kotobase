@@ -31,7 +31,8 @@
   - the **sink**. The canonical CID commit is wired up rather than assembled
     by every caller, so the easy way to call this is also the one that reads
     its receipt back before releasing rows."
-  (:require [kotobase.causal-commit :as causal]
+  (:require [grant.causal-trust :as trust]
+            [kotobase.causal-commit :as causal]
             [kotobase.execution-contract :as contract]
             [kotobase.governed-execution :as governed]
             [kotobase.persisted-basis :as basis]
@@ -162,6 +163,48 @@
   host must authenticate the request and own all trust and storage controls."
   [request basis-config verification-config nonce-config]
   (read-persistent! request (registry-basis-config basis-config verification-config) nonce-config))
+
+(defn read-registry-linked-persistent!
+  "Registry-bound read that returns rows only after linked evidence commits.
+
+  EVIDENCE supplies a causal authority receipt and a synchronous host
+  authenticator. The exact decision must be the one the read exercises. The
+  authenticator is called before basis admission and again at commit; the host
+  remains responsible for identity, issuer, trust evidence and durability.
+  This entry currently supports successful reads; denial receipt linkage and
+  cross-store atomicity are not supplied."
+  [request basis-config verification-config nonce-config evidence]
+  (when-not (and (map? evidence)
+                 (= #{:authority-receipt :verify-authority!} (set (keys evidence)))
+                 (ifn? (:verify-authority! evidence)))
+    (reject! :invalid-linked-evidence {}))
+  (let [request (validated! request)
+        authority-receipt (:authority-receipt evidence)
+        auth! (:verify-authority! evidence)
+        context {:authority-receipt authority-receipt :request (:request request) :query (:query request)}
+        commit (:commit request)
+        value-cid (:value-cid request)
+        receipt-cid (:receipt-cid-fn commit)]
+    (when-not (= #{:database :expected-basis-cid :receipt-cid-fn} (set (keys commit)))
+      (reject! :invalid-commit-options {}))
+    (when-not (and (ifn? value-cid) (ifn? receipt-cid))
+      (reject! :invalid-cid-functions {}))
+    (trust/receipt authority-receipt)
+    (when-not (= (:authority-decision request) (:causal.receipt/decision authority-receipt))
+      (reject! :authority-receipt-decision-mismatch {}))
+    (when-not (true? (auth! context))
+      (reject! :authority-receipt-refused {}))
+    (let [cid! (fn [value]
+                 (let [a (value-cid value) b (receipt-cid value)]
+                   (when-not (= a b) (reject! :receipt-cid-function-mismatch {})) a))
+          prepared (persistent-request request nonce-config)
+          sink (causal/linked-execution-receipt-sink (:database commit)
+                 {:expected-basis-cid (:expected-basis-cid commit)
+                  :value-cid cid! :request (:request request) :query (:query request)
+                  :authority-receipt authority-receipt :verify-authority! auth!
+                  :sign (:sign request) :verify (:verify request)})]
+      (basis/execute! (assoc (execution prepared) :commit! sink)
+                      (registry-basis-config basis-config verification-config)))))
 
 #?(:cljs
    (defn read-async!
