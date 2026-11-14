@@ -1,0 +1,91 @@
+(ns kotobase.governed-host-test
+  (:require [kotoba.test :refer [deftest is]]
+            [kotobase.authority-commit-attestation :as attest]
+            [kotobase.causal-commit :as causal]
+            [kotobase.causal-trust-test :as trust-fixture]
+            [kotobase.core :as core]
+            [kotobase.engine.identity :as engine-id]
+            [kotobase.engine.profile :as profile]
+            [kotobase.execution-identity :as id]
+            [kotobase.frontier-store :as frontier]
+            [kotobase.governed-execution-test :as execution-fixture]
+            [kotobase.governed-host :as host]
+            [kotobase.governed-read-test :as read-fixture]
+            [kotobase.storage.memory :as memory]))
+
+#?(:clj
+   (deftest scoped-host-commits-linked-evidence-and-refuses-before-basis
+     (let [backend (memory/memory-store)
+           db (core/open {:storage backend :encrypt-fn identity :decrypt-fn identity
+                          :blind-fn pr-str :visible? (constantly true)})
+           data-basis (core/commit-at! db nil [["INV-42" "invoice/id" "INV-42"]])
+           authority-store (memory/memory-store)
+           authority-db (core/open {:storage authority-store :encrypt-fn identity :decrypt-fn identity
+                                    :blind-fn pr-str :visible? (constantly true)})
+           authority-basis (core/commit-at! authority-db nil [["authority" "scope" "fixture"]])
+           decision (assoc trust-fixture/reader-decision :decision/trust-basis-cid authority-basis)
+           authority-receipt (assoc trust-fixture/receipt-template
+                              :causal.receipt/id "authority-receipt"
+                              :causal.receipt/basis-cid authority-basis
+                              :causal.receipt/decision decision
+                              :causal.receipt/outcome {:outcome/status :allowed}
+                              :causal.receipt/at "2026-08-27T01:00:00Z")
+           authority-commit (:receipt/commit-cid (causal/persist-decision! authority-db authority-receipt authority-basis))
+           unsigned {:format attest/format-id :commit-cid authority-commit :issuer "issuer"
+                     :tenant "acme" :epoch 7}
+           signed (assoc unsigned :signature {:key/id "issuer-key" :key/algorithm :ed25519
+                                               :signature/value (execution-fixture/proof unsigned)})
+           issuer-key {:key/id "issuer-key" :key/algorithm :ed25519 :key/material "public"}
+           host-options {:authority-database authority-db :authority-receipt authority-receipt
+                         :attestation signed :registry (fn [_] [issuer-key]) :algorithm :ed25519
+                         :issuer-authorized? (fn [{:keys [issuer]}] (= "issuer" issuer))
+                         :verify-with (fn [{:keys [payload-cid signature-value]}]
+                                        (= signature-value (str "sig:" payload-cid)))}
+           entry {:root "root" :physical-root data-basis :issuer "basis-issuer" :key-id "basis-key" :signature "basis-signature"
+                  :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
+                           :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
+                           :schema-root "schema" :model-contract-root "model" :admission-policy-root "bafy-policy"}}
+           _ (frontier/accept-and-store! backend "frontier" "db"
+               {:allow-initialize? true :candidate-root "root" :path [entry] :verify-entry (constantly true)})
+           fetched (atom 0) evaluated (atom false)
+           basis-config {:backend backend :ref-name "frontier" :database-id "db"
+                         :fetch-entry! (fn [_] (swap! fetched inc) entry)}
+           verification {:digest! (constantly "root")
+                         :checkpoint! (fn [_] {:database-id "db" :epoch 1 :logical-checkpoint-root "checkpoint"
+                                              :physical-root data-basis :engine profile/memory})
+                         :verify-location! (constantly true)
+                         :registry (fn [_] [{:key/id "basis-key" :key/algorithm :ed25519 :key/material "basis"}])
+                         :algorithm :ed25519 :issuer-authorized? (constantly true) :verify-with (constantly true)}
+           req (read-fixture/request-at db data-basis evaluated :authority-decision decision
+                 :commit {:database db :expected-basis-cid nil :receipt-cid-fn id/value-cid})
+           nonce {:backend backend :single-writer? false}
+           run (fn [request opts] (host/read-registry-signed-authority! request basis-config verification nonce opts))
+           before (memory/snapshot backend)]
+       (is (some? (try (run req (assoc host-options :registry (constantly []))) nil (catch Exception e e))))
+       (is (some? (try (run req (assoc host-options :verify-authority! (constantly true))) nil (catch Exception e e))))
+       (is (some? (try (run (assoc req :authority-decision (assoc decision :decision/trust-intent-cid "other")) host-options)
+                       nil (catch Exception e e))))
+       (is (zero? @fetched))
+       (is (false? @evaluated))
+       (is (= before (memory/snapshot backend)))
+       (let [result (run req host-options)
+             cid (get-in result [:provenance :receipt-cid])
+             commit (get-in result [:provenance :receipt-commit-cid])
+             records (:receipt/records (causal/receipt-at db commit cid))]
+         (is (= read-fixture/served (:rows result)))
+         (is (= 3 (count records)))
+         (is (= authority-receipt (second records)))
+         (is (= :nonce-replayed
+                (:kotobase.authority-window/reason
+                 (try (run req host-options) nil (catch Exception e (ex-data e)))))))
+       (let [denied-req (-> req
+                            (assoc-in [:request :nonce] "denied-nonce")
+                            (assoc :authorize! (fn [q] {:allowed? false :projection (set (:find q))
+                                                       :basis data-basis :policy-cid "bafy-policy"})))
+             err (try (run denied-req host-options) nil (catch Exception e (ex-data e)))
+             records (:receipt/records (causal/receipt-at db
+                       (:kotobase.governed-execution/deny-receipt-commit-cid err)
+                       (:kotobase.governed-execution/deny-receipt-cid err)))]
+         (is (= :authority-denied (:kotobase.governed-execution/reason err)))
+         (is (= :deny (:authority/decision (first records))))
+         (is (= 3 (count records)))))))
