@@ -171,8 +171,8 @@
   authenticator. The exact decision must be the one the read exercises. The
   authenticator is called before basis admission and again at commit; the host
   remains responsible for identity, issuer, trust evidence and durability.
-  This entry currently supports successful reads; denial receipt linkage and
-  cross-store atomicity are not supplied."
+  Query policy denial commits a linked denial receipt before refusal. Trust
+  denial before this entry and cross-store atomicity are not supplied."
   [request basis-config verification-config nonce-config evidence]
   (when-not (and (map? evidence)
                  (= #{:authority-receipt :verify-authority!} (set (keys evidence)))

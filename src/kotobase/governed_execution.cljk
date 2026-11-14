@@ -265,6 +265,7 @@
   (throw (ex-info "governed execution refused"
                   {:kotobase.governed-execution/reason :authority-denied
                    :kotobase.governed-execution/deny-receipt-cid (:receipt/cid ack)
+                   :kotobase.governed-execution/deny-receipt-commit-cid (:receipt/commit-cid ack)
                    :kotobase.governed-execution/cause (ex-data error)}
                   error)))
 

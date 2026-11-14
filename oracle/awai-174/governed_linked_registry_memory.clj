@@ -56,6 +56,7 @@
   :causal.receipt/decision real-decision :causal.receipt/outcome {:outcome/status :allowed}
   :causal.receipt/at "2026-08-27T01:00:00Z"}))
 (def evidence {:authority-receipt authority-receipt :verify-authority! (constantly true)})
+(def ^:dynamic *deny-query?* false)
 (defn run! [transform decision evidence nonce-value invalid-link?]
  (let [events (atom []) nonce (fn [_] (throw (ex-info "external nonce callback called" {}))) auth (:authorize! opts) ev (:evaluate! opts)
        request* (assoc request :nonce nonce-value)
@@ -64,7 +65,7 @@
               :authority-decision decision)
             (assoc-in [:authority :consume-nonce!] (fn [n] (swap! events conj :nonce) (nonce n)))
             (assoc :verify (fn [x] (if (and invalid-link? (= :authority-execution-link (:record x))) false ((:verify opts) x)))
-                   :authorize! (fn [q] (swap! events conj :authorize) (auth q))
+                   :authorize! (fn [q] (swap! events conj :authorize) (cond-> (auth q) *deny-query?* (assoc :allowed? false)))
                    :evaluate! (fn [q d] (swap! events conj :evaluate) (ev q d))))
        original causal/execution-receipt-sink
        result (try (with-redefs [causal/execution-receipt-sink (fn [db cfg] (let [sink (original db cfg)] (fn [r] (swap! events conj :commit) (sink r))))]
@@ -103,4 +104,22 @@
  (assert (= :nonce-replayed (get-in replay [:result :error :kotobase.authority-window/reason])))
  (assert (= before (memory/snapshot memory-backend)))
  (prn {:linked-read :allowed :rows 1 :records 3 :tamper :withheld :authority-refusal :before-basis :replay :refused :backend :memory :pass true}))
+(let [denied (binding [*deny-query?* true] (run! identity real-decision evidence "query-denial" false))
+      err (get-in denied [:result :error])
+      receipt-cid (:kotobase.governed-execution/deny-receipt-cid err)
+      commit-cid (:kotobase.governed-execution/deny-receipt-commit-cid err)
+      records (:receipt/records (causal/receipt-at (receipt-db) commit-cid receipt-cid))
+      prior (memory/snapshot memory-backend)
+      replay (binding [*deny-query?* true] (run! identity real-decision evidence "query-denial" false))]
+ (assert (= :authority-denied (:kotobase.governed-execution/reason err)))
+ (assert (= [:basis :authorize] (:events denied)))
+ (assert (= 3 (count records)))
+ (assert (= :deny (:authority/decision (first records))))
+ (assert (nil? (:result/root (first records))))
+ (assert (= authority-receipt (second records)))
+ (assert (true? (link/verify! {:link (nth records 2) :request (assoc request :nonce "query-denial") :query query
+  :execution-receipt (first records) :authority-receipt (second records) :value-cid id/value-cid :verify (:verify opts)})))
+ (assert (= :nonce-replayed (get-in replay [:result :error :kotobase.authority-window/reason])))
+ (assert (= prior (memory/snapshot memory-backend)))
+ (prn {:query-policy :denied :evaluator :not-called :linked-records 3 :readback :verified :replay :refused :backend :memory :pass true}))
 (shutdown-agents)

@@ -29,7 +29,7 @@
   (let [decision (:causal.receipt/decision authority-receipt)
         cap (:decision/runtime-capability-spec decision)]
     (when-not (and (= :allow (:decision/status decision))
-                   (= :allow (:authority/decision execution-receipt))
+                   (contains? #{:allow :deny} (:authority/decision execution-receipt))
                    (= (:principal request) (:causal.receipt/principal authority-receipt)
                       (:capability/principal cap))
                    (= (:tenant request) (get-in query [:scope :tenant]) (:capability/tenant cap))
