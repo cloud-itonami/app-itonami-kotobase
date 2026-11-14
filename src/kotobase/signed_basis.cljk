@@ -1,0 +1,66 @@
+(ns kotobase.signed-basis
+  "Verify logical commit, checkpoint and signature bindings for basis admission.
+
+  The host supplies trusted digest, checkpoint lookup, location binding and
+  signature/key-authority adapters. No discovery result grants authority."
+  (:require [kotobase.engine.identity :as identity]
+            [kotobase.engine.contract :as engine]))
+
+(defn- reject! [reason]
+  (throw (ex-info "signed basis refused" {:kotobase.signed-basis/reason reason})))
+
+(defn- then [value f]
+  #?(:clj (f value)
+     :cljs (.then (js/Promise.resolve value) f)))
+
+(defn- nonempty? [x] (and (string? x) (seq x)))
+
+(defn verifier
+  "Build VERIFY-ENTRY! for `kotobase.persisted-basis/admission`.
+
+  DIGEST! maps the existing canonical logical-commit string to its root under
+  the selected profile. CHECKPOINT! derives a verified checkpoint from the
+  requested physical root. VERIFY-LOCATION! authenticates the proof address,
+  expected physical basis and policy against the signed manifest's location.
+  VERIFY-SIGNATURE! must enforce issuer/key authorization as well as verify the
+  domain-separated payload. Async adapters may return promises under CLJS.
+  A host must constrain input, I/O, authority and digest algorithm; callbacks
+  that lie or a rollback of their trusted state cannot be detected here."
+  [{:keys [digest! checkpoint! verify-location! verify-signature!] :as config}]
+  (when-not (and (map? config)
+                 (= #{:digest! :checkpoint! :verify-location! :verify-signature!}
+                    (set (keys config)))
+                 (every? fn? [digest! checkpoint! verify-location! verify-signature!]))
+    (reject! :invalid-config))
+  (fn [{:keys [entry request manifest] :as context}]
+    (let [{:keys [root commit issuer key-id signature physical-root]} entry]
+      (when-not (and (map? entry) (map? request) (map? manifest)
+                     (nonempty? root) (nonempty? issuer) (nonempty? key-id)
+                     (some? signature) (nonempty? physical-root)
+                     (= physical-root (:base/commit request) (:data/commit manifest))
+                     (= (:authority/policy request) (:authority/policy manifest)))
+        (reject! :invalid-envelope))
+      (let [commit (identity/logical-commit commit)]
+        (when-not (= (:admission-policy-root commit) (:authority/policy request))
+          (reject! :policy-mismatch))
+        (then (digest! (identity/logical-commit-string commit))
+              (fn [calculated-root]
+                (when-not (= root calculated-root) (reject! :root-mismatch))
+                (then (verify-location! context)
+                      (fn [location-ok?]
+                        (when-not (true? location-ok?) (reject! :location-refused))
+                        (then (checkpoint! physical-root)
+                              (fn [cp]
+                                (engine/validate-checkpoint cp)
+                                (when-not (and (= physical-root (:physical-root cp))
+                                               (= (:database-id commit) (:database-id cp))
+                                               (= (:epoch commit) (:epoch cp))
+                                               (= (:logical-checkpoint-root commit) (:logical-checkpoint-root cp)))
+                                  (reject! :checkpoint-mismatch))
+                                (then (verify-signature!
+                                       (assoc context :issuer issuer :key-id key-id :signature signature
+                                              :payload (identity/signature-payload
+                                                        {:logical-commit-root root :issuer issuer :key-id key-id})))
+                                      (fn [verified?]
+                                        (when-not (true? verified?) (reject! :signature-refused))
+                                        true))))))))))))
