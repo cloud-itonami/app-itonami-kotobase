@@ -8,6 +8,21 @@
 (def receipt-dir (str receipt-root "/store"))
 (def receipt-stage (str receipt-root "/staging"))
 (defn rbackend [] (blocks/open-backend receipt-dir receipt-stage tool))
+(defn verify-receipt-commit! [db get-block commit receipt receipt-id expected-basis]
+  (let [read-only (reify
+                    storage/IBlockStore
+                    (-put-blocks! [_ _] (throw (ex-info "read-only verifier" {})))
+                    (-get-blocks [_ cids] (into {} (keep (fn [cid]
+                                                         (when-let [b (get-block cid)] [cid b]))) cids))
+                    storage/IRefStore
+                    (-read-ref [_ name] (storage/-read-ref db name))
+                    (-compare-and-set-ref! [_ _ _ _] (throw (ex-info "read-only verifier" {})))
+                    storage/IBackendCapabilities
+                    (-capabilities [_] (storage/-capabilities db)))
+        proof (causal/receipt-at (open-db read-only) commit receipt-id)]
+    (ensure! (= {:receipt/basis-cid expected-basis :receipt/records [receipt]}
+                (select-keys proof [:receipt/basis-cid :receipt/records])) "pre-CAS receipt mismatch")
+    true))
 (case (first *command-line-args*)
  "write"
  (do (ensure! (.mkdir (java.io.File. receipt-root)) "output exists")
@@ -40,8 +55,17 @@
                               (let [commit (peer/commit! (:put! ports) (:get-fn ports) (:tx-data prepared)
                                                          (:receipt/basis-cid prepared) identity)]
                                 {:target commit :value commit}))
-                            (fn [get-block _] (and (not (System/getenv "GOVERNED_REJECT"))
-                                                   (verify-bundle! get-block receipt ctx (.getPublic pair))))))
+                            (fn [get-block target]
+                              (let [read-block! (fn [cid]
+                                                  (if (and (System/getenv "GOVERNED_MISSING_TARGET") (= cid target))
+                                                    (throw (ex-info "verifier target missing" {:type :missing-verifier-target}))
+                                                    (or (get-block cid)
+                                                        (throw (ex-info "verifier block missing" {:type :missing-verifier-block})))))]
+                                (and (not (System/getenv "GOVERNED_REJECT"))
+                                     (verify-bundle! read-block! receipt ctx (.getPublic pair))
+                                     (verify-receipt-commit! db read-block! target receipt
+                                                             (:receipt/cid prepared)
+                                                             (:receipt/basis-cid prepared)))))))
                         :read-ref! #(:cid (storage/-read-ref db "governed-receipt"))}
            _ (admit! ctx request manifest)
            result (governed-read/read!
