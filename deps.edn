@@ -88,10 +88,11 @@
         ;; from a caller, and that needs one canonical codec rather than
         ;; whichever one a transitive path happens to select. Pinned to the sha
         ;; the resolver already selects here, so no new diamond is introduced;
-        ;; it is `identical` to io-ipld's main.
+        ;; AWAI-174 additionally requires the bounded canonical decoder from
+        ;; draft kotoba-lang/kotoba#1339; merge dependency before this pin.
         io.github.kotoba-lang/io-ipld
         {:git/url "https://github.com/kotoba-lang/kotoba.git"
-         :git/sha "b94158fd48ec541b70d3c455912a06f407537ddc"
+         :git/sha "cc94fa4513382cbd9411ec67805dd5feccb851e2"
          :deps/root "lib/kotoba.ioIpld"}
         ;; kotobase.core delegates to the engine, which speaks the
         ;; provider-neutral storage contract. Concrete providers (postgres, d1,
