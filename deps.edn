@@ -92,7 +92,7 @@
         ;; draft kotoba-lang/kotoba#1339; merge dependency before this pin.
         io.github.kotoba-lang/io-ipld
         {:git/url "https://github.com/kotoba-lang/kotoba.git"
-         :git/sha "970b5954f3145e27d82a2d8c79b7261303719b82"
+         :git/sha "9306581b94e23d448eedcceeb886a5cdf0e3016e"
          :deps/root "lib/kotoba.ioIpld"}
         ;; kotobase.core delegates to the engine, which speaks the
         ;; provider-neutral storage contract. Concrete providers (postgres, d1,
