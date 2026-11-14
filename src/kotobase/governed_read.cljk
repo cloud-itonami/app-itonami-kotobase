@@ -29,10 +29,16 @@
     envelope's* principal rather than to a receipt template's, which the
     retired path could not do.
   - the **sink**. The canonical CID commit is wired up rather than assembled
-    by every caller, so the easy way to call this is also the one that reads
+  by every caller, so the easy way to call this is also the one that reads
     its receipt back before releasing rows."
-  (:require [kotobase.causal-commit :as causal]
-            [kotobase.governed-execution :as governed]))
+  (:require [grant.causal-trust :as trust]
+            [kotobase.causal-commit :as causal]
+            [kotobase.execution-contract :as contract]
+            [kotobase.governed-execution :as governed]
+            [kotobase.persisted-basis :as basis]
+            [kotobase.nonce-store :as nonce]
+            [kotobase.signed-basis-keys :as basis-keys]
+            [kotoba.value.codec :as codec]))
 
 (def ^:private read-keys
   #{:commit :authority-decision
@@ -89,10 +95,19 @@
   should be visible as a call to `governed-execution` rather than as an option
   here."
   [{:keys [commit] :as request}]
-  (-> request
-      (dissoc :commit :authority-decision)
-      (assoc :commit! (causal/execution-receipt-sink (:database commit)
-                                                     (dissoc commit :database)))))
+  (let [publication (:publication commit)
+        options (dissoc commit :database :publication)
+        sink (if (contains? commit :publication)
+               (do
+                 (when-not (and (map? publication)
+                                (= #{:publish! :read-ref!} (set (keys publication))))
+                   (reject! :invalid-publication-options {}))
+                 (causal/published-execution-receipt-sink (:database commit)
+                                                          (merge options publication)))
+               (causal/execution-receipt-sink (:database commit) options))]
+    (-> request
+        (dissoc :commit :authority-decision)
+        (assoc :commit! sink))))
 
 (defn- validated! [request]
   (when-not (and (map? request) (= read-keys (set (keys request))))
@@ -109,11 +124,138 @@
   [request]
   (governed/execute! (execution (validated! request))))
 
+(defn read-bound!
+  "Read through the canonical receipt sink after persisted basis admission.
+
+  BASIS-CONFIG is passed to persisted-basis/admission; its host callbacks and
+  backing store must provide the documented signature, location and frontier
+  guarantees. This API does not create or advance the trusted frontier."
+  [request basis-config]
+  (basis/execute! (execution (validated! request)) basis-config))
+
+(defn- persistent-request [request nonce-config]
+  (when-not (and (map? nonce-config)
+                 (= #{:backend :single-writer?} (set (keys nonce-config))))
+    (reject! :invalid-nonce-config {}))
+  (let [request (validated! request)
+        envelope (contract/validate-request! (:request request))
+        scope {:format :kotobase.nonce/request-scope-v1
+               :tenant (:tenant envelope) :principal (:principal envelope)
+               :graph (:graph envelope) :epoch (:authority/epoch envelope)}
+        _ (codec/encode-bounded scope 4096)
+        scope-cid (codec/value-cid scope)
+        consume! (nonce/consumer (assoc nonce-config :scope scope-cid))]
+    (assoc-in request [:authority :consume-nonce!] consume!)))
+
+(defn read-persistent!
+  "Bound read using a persisted nonce ledger scoped to request identity.
+
+  NONCE-CONFIG names the backend and its explicit single-writer assertion.
+  The host must authenticate the principal and own the authority decision,
+  current time, basis verifier, backend durability and writer exclusivity.
+  Nonces are scoped by tenant, principal, graph and authority epoch."
+  [request basis-config nonce-config]
+  (read-bound! (persistent-request request nonce-config) basis-config))
+
+(defn- registry-basis-config [basis-config verification-config]
+  (when-not (and (map? basis-config)
+                 (= #{:backend :ref-name :database-id :fetch-entry!} (set (keys basis-config))))
+    (reject! :invalid-registry-basis-config {}))
+  (assoc basis-config :verify-entry! (basis-keys/entry-verifier verification-config)))
+
+(defn read-registry-persistent!
+  "Read with a registry-bound signed basis, persisted nonce and causal receipt.
+
+  BASIS-CONFIG supplies the frontier backend, ref, database and proof fetch;
+  VERIFICATION-CONFIG supplies every digest, checkpoint, location, registry,
+  issuer and cryptographic control. No unbound-read fallback is selected. The
+  host must authenticate the request and own all trust and storage controls."
+  [request basis-config verification-config nonce-config]
+  (read-persistent! request (registry-basis-config basis-config verification-config) nonce-config))
+
+(defn read-registry-linked-persistent!
+  "Registry-bound read that returns rows only after linked evidence commits.
+
+  EVIDENCE supplies a causal authority receipt and a synchronous host
+  authenticator. The exact decision must be the one the read exercises. The
+  authenticator is called before basis admission and again at commit; the host
+  remains responsible for identity, issuer, trust evidence and durability.
+  Query policy denial commits a linked denial receipt before refusal. Trust
+  denial before this entry and cross-store atomicity are not supplied."
+  [request basis-config verification-config nonce-config evidence]
+  (when-not (and (map? evidence)
+                 (= #{:authority-receipt :verify-authority!} (set (keys evidence)))
+                 (ifn? (:verify-authority! evidence)))
+    (reject! :invalid-linked-evidence {}))
+  (let [request (validated! request)
+        authority-receipt (:authority-receipt evidence)
+        auth! (:verify-authority! evidence)
+        context {:authority-receipt authority-receipt :request (:request request) :query (:query request)}
+        commit (:commit request)
+        value-cid (:value-cid request)
+        receipt-cid (:receipt-cid-fn commit)]
+    (when-not (contains? #{#{:database :expected-basis-cid :receipt-cid-fn}
+                           #{:database :expected-basis-cid :receipt-cid-fn :publication}}
+                         (set (keys commit)))
+      (reject! :invalid-commit-options {}))
+    (when-not (and (ifn? value-cid) (ifn? receipt-cid))
+      (reject! :invalid-cid-functions {}))
+    (trust/receipt authority-receipt)
+    (when-not (= (:authority-decision request) (:causal.receipt/decision authority-receipt))
+      (reject! :authority-receipt-decision-mismatch {}))
+    (when-not (true? (auth! context))
+      (reject! :authority-receipt-refused {}))
+    (let [cid! (fn [value]
+                 (let [a (value-cid value) b (receipt-cid value)]
+                   (when-not (= a b) (reject! :receipt-cid-function-mismatch {})) a))
+          prepared (persistent-request request nonce-config)
+          sink-options {:expected-basis-cid (:expected-basis-cid commit)
+                        :value-cid cid! :request (:request request) :query (:query request)
+                        :authority-receipt authority-receipt :verify-authority! auth!
+                        :sign (:sign request) :verify (:verify request)}
+          publication (:publication commit)
+          sink (if (contains? commit :publication)
+                 (do
+                   (when-not (and (map? publication) (= #{:publish! :read-ref!} (set (keys publication))))
+                     (reject! :invalid-publication-options {}))
+                   (causal/published-linked-execution-receipt-sink (:database commit)
+                     (merge sink-options publication)))
+                 (causal/linked-execution-receipt-sink (:database commit) sink-options))]
+      (basis/execute! (assoc (execution prepared) :commit! sink)
+                      (registry-basis-config basis-config verification-config)))))
+
 #?(:cljs
    (defn read-async!
      "The Worker path. Rows are withheld while anything is still in flight."
      [request]
      (try
        (governed/execute-async! (execution (validated! request)))
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-bound-async!
+     "Promise-aware bound read with the same canonical receipt sink."
+     [request basis-config]
+     (try
+       (basis/execute-async! (execution (validated! request)) basis-config)
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-persistent-async!
+     "Promise-aware persisted-nonce bound read."
+     [request basis-config nonce-config]
+     (try
+       (read-bound-async! (persistent-request request nonce-config) basis-config)
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-registry-persistent-async!
+     "Promise-aware entry; key registry, issuer and crypto callbacks stay synchronous."
+     [request basis-config verification-config nonce-config]
+     (try
+       (read-persistent-async! request (registry-basis-config basis-config verification-config) nonce-config)
        (catch :default error
          (js/Promise.reject error)))))

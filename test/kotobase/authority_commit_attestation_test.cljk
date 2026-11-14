@@ -1,0 +1,26 @@
+(ns kotobase.authority-commit-attestation-test
+  (:require [kotoba.test :refer [deftest is]]
+            [kotobase.authority-commit-attestation :as attestation]
+            [kotobase.governed-execution-test :as fixture]))
+
+(def registered {:key/id "authority" :key/algorithm :ed25519 :key/material "public"})
+(def unsigned {:format attestation/format-id :commit-cid "commit" :issuer "issuer"
+               :tenant "acme" :epoch 7})
+(def signed (assoc unsigned :signature {:key/id "authority" :key/algorithm :ed25519
+                                       :signature/value (fixture/proof unsigned)}))
+(def context {:commit-cid "commit" :request fixture/request :query {} :authority-receipt {}})
+(def config {:attestation signed :registry (fn [_] [registered]) :algorithm :ed25519
+             :issuer-authorized? (fn [{:keys [issuer]}] (= "issuer" issuer))
+             :verify-with (fn [{:keys [payload-cid signature-value]}]
+                            (= signature-value (str "sig:" payload-cid)))})
+(defn refused? [f]
+  (not (true? (try (f) (catch #?(:clj Exception :cljs :default) _ false)))))
+
+(deftest scoped-attestation-requires-key-issuer-and-signed-context
+  (is (true? ((attestation/verifier config) context)))
+  (is (refused? #((attestation/verifier config) (assoc context :commit-cid "other"))))
+  (is (refused? #((attestation/verifier config) (assoc-in context [:request :tenant] "other"))))
+  (is (refused? #((attestation/verifier (assoc config :algorithm :other)) context)))
+  (is (refused? #((attestation/verifier (assoc config :issuer-authorized? (constantly false))) context)))
+  (is (refused? #((attestation/verifier (assoc config :registry (fn [_] [registered registered]))) context)))
+  (is (refused? #((attestation/verifier (assoc-in config [:attestation :signature :signature/value] "bad")) context))))

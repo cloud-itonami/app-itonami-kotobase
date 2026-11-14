@@ -1,0 +1,53 @@
+(ns kotobase.nonce-store
+  "Bounded, explicitly scoped nonce consumption over immutable blocks and CAS refs.
+
+  This is a hosted storage adapter, not a trusted clock, key registry, global
+  consensus or anti-rollback anchor. A failed write can leave an orphan block;
+  an ambiguous CAS failure can consume a nonce without admitting the request."
+  (:require [kotobase.storage.core :as storage]
+            [kotoba.value.codec :as codec]))
+
+(def ^:private limits {:max-bytes 4096 :max-depth 8 :max-items 32})
+(defn- reject! [reason]
+  (throw (ex-info "nonce store refused" {:kotobase.nonce-store/reason reason})))
+(defn- then [v f]
+  #?(:clj (f v) :cljs (.then (js/Promise.resolve v) f)))
+(defn- bounded-text? [x n] (and (string? x) (<= 1 (count x) n)))
+
+(defn consumer
+  "Build a one-shot `(fn [nonce] boolean-or-Promise)` for authority-window.
+
+  SCOPE is a host-controlled, stable authority/tenant/principal namespace;
+  changes create a different replay domain. A single-writer ref backend needs
+  explicit :single-writer? true AND externally enforced writer exclusivity.
+  The adapter cannot detect rollback, ref deletion or a dishonest backend. It
+  never recycles refs and offers no retention/GC protocol."
+  [{:keys [backend scope single-writer?] :as options}]
+  (when-not (and (map? options) (= #{:backend :scope :single-writer?} (set (keys options)))
+                 (bounded-text? scope 512) (boolean? single-writer?))
+    (reject! :invalid-options))
+  (storage/validate-backend! backend)
+  (when (and (= :single-writer-ref (storage/ref-profile backend)) (not single-writer?))
+    (reject! :single-writer-not-asserted))
+  (fn [nonce]
+    (when-not (bounded-text? nonce 1024) (reject! :invalid-nonce))
+    (let [key-value {:format :kotobase.nonce/key-v1 :scope scope :nonce nonce}
+          _ (codec/encode-bounded key-value (:max-bytes limits))
+          key-cid (codec/value-cid key-value)
+          marker {:format :kotobase.nonce/consumed-v1 :key-cid key-cid}
+          bytes (codec/encode-bounded marker (:max-bytes limits))
+          cid (codec/value-cid marker)
+          ref-name (str "nonce/v1/" key-cid)]
+      (then (storage/-put-blocks! backend [{:cid cid :bytes bytes}])
+            (fn [_]
+              (then (storage/-get-blocks backend [cid])
+                    (fn [blocks]
+                      (let [stored (get blocks cid)]
+                        (when-not (and stored (= marker (codec/verify-value-cid-structurally-bounded cid stored limits)))
+                          (reject! :invalid-marker)))
+                      (then (storage/-compare-and-set-ref! backend ref-name nil cid)
+                            (fn [result]
+                              (when-not (and (map? result) (boolean? (:published? result))
+                                             (= cid (:current result)))
+                                (reject! :invalid-cas-result))
+                              (true? (:published? result)))))))))))

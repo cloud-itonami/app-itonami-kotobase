@@ -1,0 +1,91 @@
+(ns kotobase.frontier-store
+  "Explicit hosted persistence for a verified logical frontier.
+
+  Ref CAS protects against competing writers only to the extent promised by
+  the backend's declared ref profile. A restorable or malicious backend can
+  roll back both ref and blocks; this is not a hardware anti-rollback anchor."
+  (:require [kotobase.engine.frontier :as frontier]
+            [kotobase.storage.core :as storage]
+            [kotoba.value.codec :as codec]))
+
+(def ^:private limits {:max-bytes 16384 :max-depth 16 :max-items 128})
+
+(defn- reject! [problem data]
+  (throw (ex-info "frontier store rejected" (assoc data :problem problem))))
+
+(defn- then [v f]
+  #?(:clj (f v)
+     :cljs (.then (js/Promise.resolve v) f)))
+
+(defn- valid-ref-name? [x] (and (string? x) (seq x)))
+
+(defn- decoded-frontier [blocks cid database-id]
+  (let [bytes (get blocks cid)]
+    (when-not bytes (reject! :missing-frontier-block {:cid cid}))
+    (let [value (frontier/frontier
+                 (codec/verify-value-cid-structurally-bounded cid bytes limits))]
+      (when-not (= database-id (:database-id value))
+        (reject! :database-mismatch {:expected database-id}))
+      value)))
+
+(defn read-frontier
+  "Read and verify the current frontier, or nil if no ref exists.
+
+  Hosted JVM is synchronous; hosted CLJS returns a Promise. A nil result is
+  not evidence that the ref has never existed."
+  [backend ref-name database-id]
+  (storage/validate-backend! backend)
+  (when-not (and (valid-ref-name? ref-name) (valid-ref-name? database-id))
+    (reject! :invalid-location {}))
+  (then (storage/-read-ref backend ref-name)
+        (fn [ref]
+          (if (nil? ref)
+            nil
+            (let [cid (:cid ref)]
+              (when-not (valid-ref-name? cid) (reject! :invalid-ref {}))
+              (then (storage/-get-blocks backend [cid])
+                    #(hash-map :cid cid :frontier
+                               (decoded-frontier % cid database-id))))))))
+
+(defn accept-and-store!
+  "Validate a signed path using VERIFY-ENTRY, then publish with ref CAS.
+
+  The caller must provide a real, synchronous CID/signature/authority verifier;
+  this adapter cannot make a permissive verifier trustworthy. Set
+  :allow-initialize? explicitly to true to initialize a missing ref. A failed
+  CAS may leave an unreferenced immutable block."
+  [backend ref-name database-id
+   {:keys [allow-initialize? candidate-root path verify-entry] :as opts}]
+  (when-not (fn? verify-entry) (reject! :invalid-verifier {}))
+  (then (read-frontier backend ref-name database-id)
+        (fn [stored]
+          (when (and (nil? stored) (not (true? allow-initialize?)))
+            (reject! :initialization-not-authorized {}))
+          (let [result (frontier/accept-head
+                        (cond-> {:last-seen (:frontier stored)
+                                 :candidate-root candidate-root :path path
+                                 :verify-entry verify-entry}
+                          (contains? opts :max-epoch-skip)
+                          (assoc :max-epoch-skip (:max-epoch-skip opts))))
+                next-frontier (:frontier result)]
+            (when-not (= database-id (:database-id next-frontier))
+              (reject! :database-mismatch {:expected database-id}))
+            (if (= :unchanged (:status result))
+              result
+              (let [bytes (codec/encode-bounded next-frontier (:max-bytes limits))
+                    cid (codec/value-cid next-frontier)]
+                ;; Validate locally before handing bytes to a provider.
+                (decoded-frontier {cid bytes} cid database-id)
+                (then (storage/-put-blocks! backend [{:cid cid :bytes bytes}])
+                      (fn [_]
+                        ;; Do not advance a ref if storage acknowledged bad bytes.
+                        (then (storage/-get-blocks backend [cid])
+                              (fn [blocks]
+                                (decoded-frontier blocks cid database-id)
+                                (then (storage/-compare-and-set-ref!
+                                       backend ref-name (:cid stored) cid)
+                                      (fn [receipt]
+                                        (when-not (and (true? (:published? receipt))
+                                                       (= cid (:current receipt)))
+                                          (reject! :ref-conflict {:expected (:cid stored)}))
+                                        (assoc result :frontier-cid cid)))))))))))))

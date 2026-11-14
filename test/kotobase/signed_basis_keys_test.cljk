@@ -1,0 +1,44 @@
+(ns kotobase.signed-basis-keys-test
+  (:require [kotoba.test :refer [deftest is testing]]
+            [kotobase.signed-basis-keys :as basis-keys]
+            [kotobase.engine.identity :as identity]))
+
+(def key-a {:key/id "key-a" :key/algorithm :ed25519 :key/material "public-a"})
+(def entry {:root "root" :issuer "issuer-a" :key-id "key-a" :signature "sig"})
+(def context {:entry entry :request {:tenant "tenant-a" :authority/epoch 7}
+              :issuer "issuer-a" :key-id "key-a" :signature "sig"
+              :payload (identity/signature-payload
+                        {:logical-commit-root "root" :issuer "issuer-a" :key-id "key-a"})})
+(defn reason [f]
+  (try (f) nil
+       (catch #?(:clj Exception :cljs :default) e
+         (or (:kotobase.signed-basis-keys/reason (ex-data e))
+             (:kotobase.execution-keys/reason (ex-data e))))))
+(defn make-verifier [entries issuer-ok? events]
+  (basis-keys/verifier
+   {:registry (fn [scope] (swap! events conj [:registry scope]) entries)
+    :algorithm :ed25519
+    :issuer-authorized? (fn [input] (swap! events conj [:issuer input]) issuer-ok?)
+    :verify-with (fn [input] (swap! events conj [:crypto input]) true)}))
+
+(deftest registry-binds-signed-basis-to-authority
+  (testing "the scoped key and exact canonical payload reach crypto"
+    (let [events (atom []) verify (make-verifier [key-a] true events)]
+      (is (true? (verify context)))
+      (is (= [:registry :issuer :crypto] (mapv first @events)))
+      (is (= {:role :issuer :tenant "tenant-a" :epoch 7} (second (first @events))))
+      (is (= (:payload context) (:payload (second (last @events)))))))
+  (testing "ambiguous IDs are rejected before issuer and crypto"
+    (let [events (atom []) verify (make-verifier [key-a (assoc key-a :key/material "other")] true events)]
+      (is (= :duplicate-key-id (reason #(verify context))))
+      (is (= [:registry] (mapv first @events)))))
+  (testing "issuer refusal and non-boolean results cannot call crypto"
+    (doseq [answer [false nil :yes]]
+      (let [events (atom []) verify (make-verifier [key-a] answer events)]
+        (is (= :issuer-not-authorized (reason #(verify context))))
+        (is (= [:registry :issuer] (mapv first @events))))))
+  (testing "tampered payload and issuer do not contact the registry"
+    (doseq [bad [(assoc context :payload "wrong") (assoc context :issuer "other")]]
+      (let [events (atom []) verify (make-verifier [key-a] true events)]
+        (is (= :invalid-context (reason #(verify bad))))
+        (is (empty? @events))))))

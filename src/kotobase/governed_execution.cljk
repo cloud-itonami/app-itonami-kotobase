@@ -265,6 +265,7 @@
   (throw (ex-info "governed execution refused"
                   {:kotobase.governed-execution/reason :authority-denied
                    :kotobase.governed-execution/deny-receipt-cid (:receipt/cid ack)
+                   :kotobase.governed-execution/deny-receipt-commit-cid (:receipt/commit-cid ack)
                    :kotobase.governed-execution/cause (ex-data error)}
                   error)))
 
@@ -287,7 +288,7 @@
                 (evaluate! compiled-query decision))
    :receipt! sink})
 
-(defn execute!
+(defn- execute-internal!
   "Run one governed execution; return the guarded read plus its receipt.
 
   Rows are returned only after the ExecutionReceipt has been signed, its
@@ -296,7 +297,7 @@
   refusal as the cause."
   [{:keys [request manifest query value-cid verify plan-digest cost sign
            commit!]
-    :as options}]
+    :as options} admit-basis!]
   (validate-shape! options)
   (contract/validate-request! request)
   (contract/validate-manifest! manifest)
@@ -316,6 +317,10 @@
     (verified! :execution-manifest
                (verify (signature-request value-cid request
                                           :execution-manifest manifest)))
+    (contract/validate-manifest-request! manifest request)
+    (when admit-basis!
+      (when-not (true? (admit-basis! {:request request :manifest manifest}))
+        (reject! :basis-admission-refused {})))
     (nonce-verdict! request (consume-nonce! (:nonce request)))
     (let [captured (atom nil)
           admitted (atom false)
@@ -341,6 +346,21 @@
                          (refused! error (durable-ack! (commit! signed))))
                        (throw error))))]
       (assoc result :execution/receipt @captured))))
+
+
+(defn execute!
+  "Run a governed execution with the legacy v1 contract."
+  [options]
+  (execute-internal! options nil))
+
+(defn execute-bound!
+  "Require a trusted basis verifier before nonce consumption or query work.
+  The verifier receives the authenticated request and manifest and must return
+  literal true. The host owns proof, location and policy verification."
+  [options admit-basis!]
+  (when-not (fn? admit-basis!)
+    (reject! :missing-basis-verifier {}))
+  (execute-internal! options admit-basis!))
 
 #?(:cljs
    (defn- then [value f]
@@ -376,12 +396,12 @@
          (.then (fn [ack] {:ack ack :receipt signed})))))
 
 #?(:cljs
-   (defn execute-async!
+   (defn- execute-async-internal!
      "The Worker path. Every host answer may be a Promise and each is awaited.
 
      Rows are not returned while policy, evaluation, the nonce ledger, the
      signature, its verification, or the receipt commit is still in flight."
-     [{:keys [request manifest query value-cid verify plan-digest] :as options}]
+     [{:keys [request manifest query value-cid verify plan-digest] :as options} admit-basis!]
      (try
        (validate-shape! options)
        (contract/validate-request! request)
@@ -390,6 +410,7 @@
              consume-nonce! (timing! options)
              captured (atom nil)
              admitted (atom false)
+             guard-started (atom false)
              sink (fn [{:keys [compiled rows]}]
                     (-> (then (plan-digest compiled)
                               #(receipt-async options ids
@@ -404,14 +425,22 @@
          (-> (then (verify (signature-request value-cid request
                                               :execution-manifest manifest))
                    #(verified! :execution-manifest %))
+             (.then (fn [_] (contract/validate-manifest-request! manifest request)))
+             (.then (fn [_]
+                      (if admit-basis!
+                        (then (admit-basis! {:request request :manifest manifest})
+                              (fn [answer] (when-not (true? answer)
+                                             (reject! :basis-admission-refused {}))))
+                        nil)))
              (.then (fn [_] (consume-nonce! (:nonce request))))
              (.then #(nonce-verdict! request %))
-             (.then (fn [_] (guarded/read-async!
-                             (guarded-request options sink admitted))))
+             (.then (fn [_]
+                      (reset! guard-started true)
+                      (guarded/read-async! (guarded-request options sink admitted))))
              (.then (fn [result] (assoc result :execution/receipt @captured)))
              (.catch
               (fn [error]
-                (if (authority-refusal? error @admitted)
+                (if (and @guard-started (authority-refusal? error @admitted))
                   (-> (then (plan-digest nil)
                             #(receipt-async options ids
                                             (checked-plan-digest %)
@@ -421,3 +450,17 @@
                   (js/Promise.reject error))))))
        (catch :default error
          (js/Promise.reject error)))))
+
+
+#?(:cljs
+   (defn execute-async! [options]
+     (execute-async-internal! options nil)))
+
+#?(:cljs
+   (defn execute-bound-async!
+     "Promise-aware variant of execute-bound!; the verifier is awaited."
+     [options admit-basis!]
+     (if (fn? admit-basis!)
+       (execute-async-internal! options admit-basis!)
+       (js/Promise.reject (ex-info "missing basis verifier"
+                                   {:kotobase.governed-execution/reason :missing-basis-verifier})))))
