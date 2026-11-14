@@ -16,6 +16,7 @@
             [grant.causal-trust :as trust]
             [identity.adapters.ledger :as identity-ledger]
             [kotobase.core :as core]
+            [kotobase.authority-execution-link :as link]
             [kotobase.execution-contract :as contract]))
 
 (def format-version "kotobase.causal-record.v1")
@@ -288,3 +289,37 @@
         (reject! :invalid-receipt-cid {}))
       (commit-records! database execution-stream receipt-id
                        expected-basis-cid [receipt]))))
+
+
+(defn linked-execution-receipt-sink
+  "Build an opt-in sink that commits a signed authority link with its records.
+
+  The host must authenticate the supplied authority receipt and its evidence
+  through verify-authority!. A literal true is required. Sign and verify are
+  synchronous and scoped by the caller; the execution receipt itself must
+  already have been authenticated by the execution path. One canonical commit
+  contains all three records and is read back before acknowledgement. This does
+  not advance a mutable head or claim cross-store or distributed atomicity."
+  [database {:keys [expected-basis-cid value-cid request query authority-receipt
+                    verify-authority! sign verify] :as options}]
+  (when-not (and (= #{:expected-basis-cid :value-cid :request :query :authority-receipt
+                      :verify-authority! :sign :verify} (set (keys options)))
+                 (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+                 (every? ifn? [value-cid verify-authority! sign verify]))
+    (reject! :invalid-linked-sink-options {}))
+  (fn [receipt]
+    (contract/validate-receipt! receipt)
+    (when-not (true? (verify-authority! {:authority-receipt authority-receipt
+                                        :request request :query query}))
+      (reject! :authority-receipt-refused {}))
+    (let [receipt-id (value-cid receipt)
+          unsigned {:format link/format-id :request/digest (value-cid request)
+                    :execution-receipt/cid receipt-id
+                    :authority-receipt/cid (value-cid authority-receipt)
+                    :tenant (:tenant request) :epoch (:authority/epoch request)}
+          signed (assoc unsigned :signature (sign unsigned))]
+      (link/verify! {:link signed :request request :query query
+                     :execution-receipt receipt :authority-receipt authority-receipt
+                     :value-cid value-cid :verify verify})
+      (commit-records! database execution-stream receipt-id expected-basis-cid
+                       [receipt authority-receipt signed]))))
