@@ -336,6 +336,47 @@
       (commit-records! database execution-stream receipt-id
                        expected-basis-cid [receipt]))))
 
+(defn published-execution-receipt-sink
+  "Build a receipt sink for an explicit host publication transaction.
+
+  PUBLISH! receives the validated receipt and prepared transaction data. It
+  must persist and semantically verify the complete commit before atomically
+  publishing its ref, then return the commit CID. READ-REF! independently
+  reads that ref. The host owns both callbacks and their storage guarantees;
+  this adapter rechecks the published ref and exact immutable receipt before
+  returning an acknowledgement. It does not make nonce consumption and
+  receipt publication one transaction, or establish anti-rollback."
+  [database {:keys [expected-basis-cid receipt-cid-fn publish! read-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :receipt-cid-fn :publish! :read-ref!}
+                    (set (keys options)))
+                 (ifn? publish!) (ifn? read-ref!))
+    (reject! :invalid-publication-sink-options {}))
+  (let [prepare-options {:expected-basis-cid expected-basis-cid
+                         :receipt-cid-fn receipt-cid-fn}]
+    (execution-sink-options! prepare-options)
+    (fn [receipt]
+      (let [prepared (prepare-execution-receipt receipt prepare-options)
+            receipt-id (:receipt/cid prepared)]
+        (then (publish! {:receipt receipt :prepared prepared})
+          (fn [commit-cid]
+            (when-not (non-empty-string? commit-cid)
+              (reject! :invalid-published-commit {}))
+            (then (read-ref!)
+              (fn [ref-cid]
+                (when-not (= commit-cid ref-cid)
+                  (reject! :published-ref-mismatch {}))
+                (then (receipt-at database commit-cid receipt-id)
+                  (fn [proof]
+                    (when-not (= {:receipt/basis-cid expected-basis-cid
+                                  :receipt/stream execution-stream
+                                  :receipt/records [receipt]}
+                                 (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
+                      (reject! :write-proof-mismatch {}))
+                    {:receipt/durable? true :receipt/cid receipt-id
+                     :receipt/commit-cid commit-cid :receipt/basis-cid expected-basis-cid
+                     :receipt/record-count 1 :receipt/route :published-canonical-cid-dag}))))))))))
+
 
 (defn linked-execution-receipt-sink
   "Build an opt-in sink that commits a signed authority link with its records.

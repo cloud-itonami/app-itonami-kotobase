@@ -29,7 +29,7 @@
     envelope's* principal rather than to a receipt template's, which the
     retired path could not do.
   - the **sink**. The canonical CID commit is wired up rather than assembled
-    by every caller, so the easy way to call this is also the one that reads
+  by every caller, so the easy way to call this is also the one that reads
     its receipt back before releasing rows."
   (:require [grant.causal-trust :as trust]
             [kotobase.causal-commit :as causal]
@@ -95,10 +95,19 @@
   should be visible as a call to `governed-execution` rather than as an option
   here."
   [{:keys [commit] :as request}]
-  (-> request
-      (dissoc :commit :authority-decision)
-      (assoc :commit! (causal/execution-receipt-sink (:database commit)
-                                                     (dissoc commit :database)))))
+  (let [publication (:publication commit)
+        options (dissoc commit :database :publication)
+        sink (if (contains? commit :publication)
+               (do
+                 (when-not (and (map? publication)
+                                (= #{:publish! :read-ref!} (set (keys publication))))
+                   (reject! :invalid-publication-options {}))
+                 (causal/published-execution-receipt-sink (:database commit)
+                                                          (merge options publication)))
+               (causal/execution-receipt-sink (:database commit) options))]
+    (-> request
+        (dissoc :commit :authority-decision)
+        (assoc :commit! sink))))
 
 (defn- validated! [request]
   (when-not (and (map? request) (= read-keys (set (keys request))))

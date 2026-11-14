@@ -103,6 +103,38 @@
     (testing "and no mutable head was published to find it by"
       (is (nil? (core/head db))))))
 
+#?(:clj
+   (deftest publication-route-verifies-ref-and-receipt-before-returning-rows
+     (let [backend (memory/memory-store)
+           db (database backend)
+           basis (seed! db)
+           ref (atom nil)
+           calls (atom 0)
+           publish! (fn [{:keys [prepared]}]
+                      (swap! calls inc)
+                      (let [cid (core/commit-at! db (:receipt/basis-cid prepared) (:tx-data prepared))]
+                        (reset! ref cid)
+                        cid))
+           make-request (fn [read-ref!]
+                          (assoc-in (request-at db basis (atom false))
+                                    [:commit :publication]
+                                    {:publish! publish! :read-ref! read-ref!}))
+           result (governed-read/read! (make-request #(deref ref)))
+           commit-cid (get-in result [:provenance :receipt-commit-cid])]
+       (is (= served (:rows result)))
+       (is (= commit-cid @ref))
+       (is (= [(:execution/receipt result)]
+              (:receipt/records (causal/receipt-at db commit-cid "bafy-execution-receipt"))))
+       (is (= 1 @calls))
+       (is (some? (try (governed-read/read! (make-request (constantly "stale"))) nil
+                       (catch kerror/ExceptionInfo e e))))
+       (is (= 2 @calls))
+       (let [request (assoc-in (request-at db basis (atom false))
+                               [:commit :publication]
+                               {:publish! (fn [_] basis) :read-ref! (constantly basis)})]
+         (is (some? (try (governed-read/read! request) nil
+                         (catch kerror/ExceptionInfo e e))))))))
+
 (deftest the-retired-paths-checks-are-still-made
   (let [db (database (memory/memory-store))
         basis (seed! db)]
