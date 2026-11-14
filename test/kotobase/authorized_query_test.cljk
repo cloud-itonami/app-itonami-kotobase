@@ -88,7 +88,12 @@
     (is (= :payment-review (get-in @seen [:compiled :query :scope :purpose])))))
 
 
-;; --- Static analysis: recursion detection -----------------------------------
+;; --- Static analysis: syntactic cycle heuristic -----------------------------
+
+(deftest ordinary-variable-patterns-are-admitted
+  (doseq [clauses [[[(v "x") :parent (v "y")]]
+                   [[(v "x") :parent (v "y")] [(v "y") :parent (v "z")]]]]
+    (is (map? (query/compile! authorize (assoc request :where clauses))))))
 
 (def recursive-query
   {:find [(v "x") (v "y") (v "z")]
@@ -135,7 +140,7 @@
   (is (= :invalid-query
          (:kotobase.query/reason
           (ex-data (try (query/compile! authorize join-explosion-query)
-                        (catch kerror/ExceptionInfo e e))))))
+                        (catch kerror/ExceptionInfo e e)))))))
 
 ;; Star join pattern - center variable connects to many leaves
 (def star-join-query
@@ -147,10 +152,14 @@
            :basis "bafy-basis"}
    :limit 10})
 
-(deftest star-join-query-rejected
-  "Detects star join patterns with high fanout"
-  (is (= :invalid-query
-         (:kotobase.query/reason
-          (ex-data (try (query/compile! authorize star-join-query)
-                        (catch kerror/ExceptionInfo e e)))))))
-)
+(deftest bounded-star-join-is-admitted
+  (is (map? (query/compile! authorize star-join-query))))
+
+(deftest fanout-bound-counts-clauses-per-variable
+  (let [clause [(v "a") (v "b") (v "c") (v "d")]
+        q (assoc request :where (vec (repeat 32 clause)))]
+    ;; Four variables appear in 32 clauses each: 4 * 32 exceeds 100.
+    (is (= :invalid-query
+           (:kotobase.query/reason
+            (ex-data (try (query/compile! authorize q)
+                          (catch kerror/ExceptionInfo e e))))))))

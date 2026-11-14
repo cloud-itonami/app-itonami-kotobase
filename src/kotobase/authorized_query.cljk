@@ -23,20 +23,16 @@
   (filterv #(and (symbol? %) (str/starts-with? (name %) "?")) pattern))
 
 (defn- build-var-dep-graph
-  "Build a variable dependency graph from where clauses.
-   Returns a map of var -> set of vars it depends on (shares a clause with)."
+  "Build a directed syntactic graph from the ordered variables of each clause.
+   This is a conservative cycle heuristic, not a Datalog recursion analysis."
   [where-clauses]
-  (let [var-clauses (group-by first
-                              (mapcat (fn [clause]
-                                        (let [vs (extract-vars clause)]
-                                          (for [v vs] [v clause])))
-                                      where-clauses))
-        deps (reduce-kv (fn [acc var clauses]
-                          (let [clause-vars (set (mapcat extract-vars (map second clauses)))
-                                related-vars (set/union clause-vars #{var})]
-                            (assoc acc var (disj related-vars var))))
-                        {} var-clauses)]
-    deps))
+  (reduce (fn [graph clause]
+            (let [vars (vec (distinct (extract-vars clause)))
+                  from (first vars)]
+              (if from
+                (update graph from (fnil into #{}) (rest vars))
+                graph)))
+          {} where-clauses))
 
 (defn- has-cycle?
   "Detect cycles in a variable dependency graph using DFS."
@@ -67,9 +63,9 @@
    Heuristic: count unique variables that appear in multiple clauses (join edges),
    and estimate fanout based on clause counts sharing variables."
   [where-clauses]
-  (let [var-clauses (group-by identity
+  (let [var-clauses (group-by first
                               (mapcat (fn [clause]
-                                        (let [vs (extract-vars clause)]
+                                        (let [vs (distinct (extract-vars clause))]
                                           (for [v vs] [v clause])))
                                       where-clauses))
         join-vars (filter (fn [[_ clauses]] (> (count clauses) 1)) var-clauses)
@@ -89,7 +85,7 @@
        (vector? (:find query)) (seq (:find query)) (<= (count (:find query)) 64)
        (vector? (:where query)) (<= (count (:where query)) max-clauses)
        (every? #(and (vector? %) (<= 1 (count %) 4)) (:where query))
-       ;; Static analysis: recursion detection
+       ;; Syntactic cycle heuristic; rule recursion is not represented here.
        (not (has-cycle? (build-var-dep-graph (:where query))))
        ;; Static analysis: variable count limit
        (<= (count-variables (:where query)) max-variable-count)
