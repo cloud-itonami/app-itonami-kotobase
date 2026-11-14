@@ -14,4 +14,12 @@ clojure -Sdeps '{:paths ["jvm" "/Users/junkawasaki/github/wt/codex/awai-174-mani
 
 For the baseline control the same command used `jvm-baseline` in place of `jvm`. An initial attempt from the scratch directory used incorrect relative copy paths and failed to locate the test; no test result was obtained from that attempt.
 
+The one-time `key_registry_ed25519.clj` reference combines the candidate registry with the existing portable `ed25519.sign` implementation and deterministic test-only seeds. On Clojure CLI 1.12.5.1654 it passed six controls: valid signature, wrong public key, altered payload, wrong authority epoch, and duplicate IDs in both orders. Duplicate and wrong-epoch cases did not call cryptography. The same script failed against baseline at the first duplicate assertion. It is not a production signature profile, key source, credential, Native test or product integration. Script SHA-256 `4712b0917413d8844f603bcb33f73621c70682e5c6ae814eec2ba8c3d365d97d`; staged Ed25519 entrypoint SHA-256 `7a21891b988e7d8de632b5aa13e790d4b642bc5cc5e8070f81d240a08c484679` (its transitive local reference dependencies are the existing policy-forest classpath). No download occurred. Commands from the task scratch directory:
+
+```sh
+clojure -Sdeps '{:paths ["jvm" "/Users/junkawasaki/github/wt/codex/awai-174-manifest-binding/.agent-output/classpath" "/Users/junkawasaki/github/wt/codex/awai-532-ipld-forest/.agent-output/policy-forest/classpath"]}' -M ../../oracle/awai-174/key_registry_ed25519.clj
+```
+
+The baseline control used the same command with `jvm-baseline` in place of `jvm`.
+
 Commands: copy `src/kotobase/execution_keys.cljk` unchanged as `kotobase/execution_keys.cljc`, supply a local `kotoba.lang.coll` shim exposing `clojure.set/difference`, then run `bb -cp <staged-root> <check.clj>`. Staged data and logs are retained in task-owned `.agent-output/key-registry-oracle/`; no dependencies were downloaded for this run. Baseline source SHA-256 `cab5d99b7f2e091700eb00fa9e007e32ee26a33a3c6922ce4710f09a5d885ae4`; candidate source `6f7c3c503197f57e24db68b9425d525621fc32e23c4458356a79d78b2a517f5e`; shim `57ae1276ebf4c148394cb3ad5f65d5f6f9f31ddf294a300580441aa7336e78a4`; check `5d726161787785341a7d327c81c8dcf7a8a7b63c5c0434f39e816674040a6924`.
