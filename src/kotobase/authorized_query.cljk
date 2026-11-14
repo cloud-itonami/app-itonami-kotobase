@@ -157,6 +157,15 @@
                  (assoc :receipt-commit-cid
                         (:receipt/commit-cid ack)))})
 
+(defn- check-rows! [compiled rows]
+  (let [limit (get-in compiled [:query :limit])]
+    (when-not (and (pos-int? limit) (<= limit max-limit))
+      (reject! :invalid-compiled-query {}))
+    (when-not (vector? rows) (reject! :invalid-result {}))
+    (when (> (count rows) limit)
+      (reject! :result-limit-exceeded {:limit limit :row-count (count rows)}))
+    rows))
+
 (defn execute!
   "Execute only a compiled query through EVALUATE!, and record that it ran.
 
@@ -182,7 +191,7 @@
   (when-not (ifn? evaluate!) (reject! :missing-evaluator {}))
   (when-not (ifn? receipt!) (reject! :missing-receipt-sink {}))
   (let [rows (evaluate! (:query compiled) (:decision compiled))]
-    (when-not (vector? rows) (reject! :invalid-result {}))
+    (check-rows! compiled rows)
     (durable-result compiled rows
                     (receipt! {:compiled compiled :rows rows
                                :row-count (count rows)}))))
@@ -204,7 +213,7 @@
             (evaluate! (:query compiled) (:decision compiled)))
            (.then
             (fn [rows]
-              (when-not (vector? rows) (reject! :invalid-result {}))
+              (check-rows! compiled rows)
               (-> (js/Promise.resolve
                    (receipt! {:compiled compiled :rows rows
                               :row-count (count rows)}))

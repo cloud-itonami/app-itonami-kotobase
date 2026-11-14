@@ -347,6 +347,11 @@
   ;; the plumbing did — and writing the second one into the evidence plane as
   ;; `:deny` records a decision policy never made
   (let [journal (atom [])]
+    (testing "an evaluator returning more than the admitted limit"
+      (is (= :result-limit-exceeded
+             (reason #(governed/execute!
+                       (options journal :evaluate! (fn [_ _] (vec (range 21))))))))
+      (is (= [] (committed journal))))
     (testing "a result that is not a vector"
       (is (= :invalid-result
              (reason #(governed/execute!

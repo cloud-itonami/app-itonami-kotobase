@@ -87,6 +87,18 @@
     (is (= "acme" (get-in @seen [:compiled :query :scope :tenant])))
     (is (= :payment-review (get-in @seen [:compiled :query :scope :purpose])))))
 
+(deftest evaluator-cannot-exceed-admitted-row-limit
+  (let [compiled (query/compile! authorize (assoc request :limit 2))
+        calls (atom 0)
+        sink (fn [_] (swap! calls inc) (receipt! nil))]
+    (is (= [1 2] (:rows (query/execute! (fn [_ _] [1 2]) sink compiled))))
+    (is (= 1 @calls))
+    (is (= :result-limit-exceeded
+           (:kotobase.query/reason
+            (ex-data (try (query/execute! (fn [_ _] [1 2 3]) sink compiled)
+                          (catch kerror/ExceptionInfo e e))))))
+    (is (= 1 @calls))))
+
 
 ;; --- Static analysis: syntactic cycle heuristic -----------------------------
 

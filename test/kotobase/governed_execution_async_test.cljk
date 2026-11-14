@@ -220,3 +220,17 @@
              (testing "and nothing ran or was written"
                (is (= [] @steps)))
              (done)))))))
+
+(deftest worker-refuses-rows-over-the-admitted-limit
+  (async done
+    (let [steps (atom [])]
+      (-> (seeded
+           (fn [db basis]
+             (governed/execute-async!
+              (options db steps basis :evaluate!
+                       (fn [_ _] (swap! steps conj :evaluate) (later (vec (range 21))))))))
+          (.then (fn [_] (is false "over-limit rows were served") (done)))
+          (.catch (fn [error]
+                    (is (= :result-limit-exceeded (:kotobase.query/reason (ex-data error))))
+                    (is (= [:model :evaluate] @steps))
+                    (done)))))))
