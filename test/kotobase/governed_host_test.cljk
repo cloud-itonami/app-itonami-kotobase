@@ -16,6 +16,17 @@
 #?(:clj
    (deftest scoped-host-commits-linked-evidence-and-refuses-before-basis
      (let [backend (memory/memory-store)
+           pair (.generateKeyPair (java.security.KeyPairGenerator/getInstance "Ed25519"))
+           sign-ed (fn [payload]
+                     (let [s (java.security.Signature/getInstance "Ed25519")]
+                       (.initSign s (.getPrivate pair))
+                       (.update s (.getBytes ^String payload "UTF-8"))
+                       (.encodeToString (java.util.Base64/getEncoder) (.sign s))))
+           verify-ed (fn [payload signature]
+                       (let [s (java.security.Signature/getInstance "Ed25519")]
+                         (.initVerify s (.getPublic pair))
+                         (.update s (.getBytes ^String payload "UTF-8"))
+                         (.verify s (.decode (java.util.Base64/getDecoder) ^String signature))))
            db (core/open {:storage backend :encrypt-fn identity :decrypt-fn identity
                           :blind-fn pr-str :visible? (constantly true)})
            data-basis (core/commit-at! db nil [["INV-42" "invoice/id" "INV-42"]])
@@ -34,14 +45,15 @@
            unsigned {:format attest/format-id :commit-cid authority-commit :issuer "issuer"
                      :tenant "acme" :epoch 7}
            signed (assoc unsigned :signature {:key/id "issuer-key" :key/algorithm :ed25519
-                                               :signature/value (execution-fixture/proof unsigned)})
+                                               :signature/value (sign-ed (id/payload-cid unsigned))})
            issuer-key {:key/id "issuer-key" :key/algorithm :ed25519 :key/material "public"}
            host-options {:authority-database authority-db :authority-receipt authority-receipt
                          :attestation signed :registry (fn [_] [issuer-key]) :algorithm :ed25519
                          :issuer-authorized? (fn [{:keys [issuer]}] (= "issuer" issuer))
-                         :verify-with (fn [{:keys [payload-cid signature-value]}]
-                                        (= signature-value (str "sig:" payload-cid)))}
-           entry {:root "root" :physical-root data-basis :issuer "basis-issuer" :key-id "basis-key" :signature "basis-signature"
+                         :verify-with (fn [{:keys [key payload-cid signature-value]}]
+                                        (and (= "public" (:key/material key)) (verify-ed payload-cid signature-value)))}
+           entry {:root "root" :physical-root data-basis :issuer "basis-issuer" :key-id "basis-key"
+                  :signature (sign-ed (engine-id/signature-payload {:logical-commit-root "root" :issuer "basis-issuer" :key-id "basis-key"}))
                   :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
                            :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
                            :schema-root "schema" :model-contract-root "model" :admission-policy-root "bafy-policy"}}
@@ -55,17 +67,26 @@
                                               :physical-root data-basis :engine profile/memory})
                          :verify-location! (constantly true)
                          :registry (fn [_] [{:key/id "basis-key" :key/algorithm :ed25519 :key/material "basis"}])
-                         :algorithm :ed25519 :issuer-authorized? (constantly true) :verify-with (constantly true)}
+                         :algorithm :ed25519 :issuer-authorized? (constantly true)
+                         :verify-with (fn [{:keys [key payload signature-value]}]
+                                        (and (= "basis" (:key/material key)) (verify-ed payload signature-value)))}
            req (read-fixture/request-at db data-basis evaluated :authority-decision decision
                  :commit {:database db :expected-basis-cid nil :receipt-cid-fn id/value-cid})
            nonce {:backend backend :single-writer? false}
            run (fn [request opts] (host/read-registry-signed-authority! request basis-config verification nonce opts))
            before (memory/snapshot backend)]
        (is (some? (try (run req (assoc host-options :registry (constantly []))) nil (catch Exception e e))))
+       (is (some? (try (run req (assoc-in host-options [:attestation :signature :signature/value] (sign-ed "wrong"))) nil (catch Exception e e))))
        (is (some? (try (run req (assoc host-options :verify-authority! (constantly true))) nil (catch Exception e e))))
        (is (some? (try (run (assoc req :authority-decision (assoc decision :decision/trust-intent-cid "other")) host-options)
                        nil (catch Exception e e))))
        (is (zero? @fetched))
+       (is (false? @evaluated))
+       (is (= before (memory/snapshot backend)))
+       (is (some? (try (host/read-registry-signed-authority!
+                         req (assoc basis-config :fetch-entry! (fn [_] (assoc entry :signature (sign-ed "wrong"))))
+                         verification nonce host-options)
+                       nil (catch Exception e e))))
        (is (false? @evaluated))
        (is (= before (memory/snapshot backend)))
        (let [result (run req host-options)
