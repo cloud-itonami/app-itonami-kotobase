@@ -214,3 +214,32 @@
                       (catch kerror/ExceptionInfo e e))))
       (is (= [:verify] @events))
       (is (false? @rejected)))))
+
+(deftest persistent-read-consumes-a-scoped-nonce
+  (let [backend (memory/memory-store) db (database backend) basis (seed! db)
+        entry {:root "fixture-root"
+               :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
+                        :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
+                        :schema-root "schema" :model-contract-root "model"
+                        :admission-policy-root "bafy-policy"}}
+        _ (frontier/accept-and-store! backend "frontier" "db"
+            {:allow-initialize? true :candidate-root (:root entry) :path [entry]
+             :verify-entry (constantly true)})
+        evaluated (atom 0) external (atom 0)
+        request (request-at db basis (atom false)
+                  :evaluate! (fn [_ _] (swap! evaluated inc) served)
+                  :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                              :consume-nonce! (fn [_] (swap! external inc) true)})
+        config {:backend backend :ref-name "frontier" :database-id "db"
+                :fetch-entry! (constantly entry) :verify-entry! (constantly true)}
+        nonce-config {:backend backend :single-writer? false}
+        before (memory/snapshot backend)]
+    (is (some? (try (governed-read/read-persistent! request (assoc config :verify-entry! (constantly false)) nonce-config)
+                    nil (catch kerror/ExceptionInfo e e))))
+    (is (= before (memory/snapshot backend)))
+    (is (= served (:rows (governed-read/read-persistent! request config nonce-config))))
+    (is (= :nonce-replayed (reason #(governed-read/read-persistent! request config nonce-config))))
+    (is (= 1 @evaluated))
+    (is (zero? @external))
+    (is (= :invalid-nonce-config
+           (reason #(governed-read/read-persistent! request config (assoc nonce-config :scope "caller-selected")))))))

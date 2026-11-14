@@ -32,8 +32,11 @@
     by every caller, so the easy way to call this is also the one that reads
     its receipt back before releasing rows."
   (:require [kotobase.causal-commit :as causal]
+            [kotobase.execution-contract :as contract]
             [kotobase.governed-execution :as governed]
-            [kotobase.persisted-basis :as basis]))
+            [kotobase.persisted-basis :as basis]
+            [kotobase.nonce-store :as nonce]
+            [kotoba.value.codec :as codec]))
 
 (def ^:private read-keys
   #{:commit :authority-decision
@@ -119,6 +122,30 @@
   [request basis-config]
   (basis/execute! (execution (validated! request)) basis-config))
 
+(defn- persistent-request [request nonce-config]
+  (when-not (and (map? nonce-config)
+                 (= #{:backend :single-writer?} (set (keys nonce-config))))
+    (reject! :invalid-nonce-config {}))
+  (let [request (validated! request)
+        envelope (contract/validate-request! (:request request))
+        scope {:format :kotobase.nonce/request-scope-v1
+               :tenant (:tenant envelope) :principal (:principal envelope)
+               :graph (:graph envelope) :epoch (:authority/epoch envelope)}
+        _ (codec/encode-bounded scope 4096)
+        scope-cid (codec/value-cid scope)
+        consume! (nonce/consumer (assoc nonce-config :scope scope-cid))]
+    (assoc-in request [:authority :consume-nonce!] consume!)))
+
+(defn read-persistent!
+  "Bound read using a persisted nonce ledger scoped to request identity.
+
+  NONCE-CONFIG names the backend and its explicit single-writer assertion.
+  The host must authenticate the principal and own the authority decision,
+  current time, basis verifier, backend durability and writer exclusivity.
+  Nonces are scoped by tenant, principal, graph and authority epoch."
+  [request basis-config nonce-config]
+  (read-bound! (persistent-request request nonce-config) basis-config))
+
 #?(:cljs
    (defn read-async!
      "The Worker path. Rows are withheld while anything is still in flight."
@@ -134,5 +161,14 @@
      [request basis-config]
      (try
        (basis/execute-async! (execution (validated! request)) basis-config)
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-persistent-async!
+     "Promise-aware persisted-nonce bound read."
+     [request basis-config nonce-config]
+     (try
+       (read-bound-async! (persistent-request request nonce-config) basis-config)
        (catch :default error
          (js/Promise.reject error)))))
