@@ -32,3 +32,15 @@
 (deftest missing-state-and-bad-config-refused
   (is (= :invalid-config (reason #(basis/admission {}))))
   (is (= :missing-frontier (reason #((basis/admission (config (memory/memory-store) (constantly entry) (constantly true))) context)))))
+
+(deftest stale-entry-is-rejected-before-verifier-and-change-during-verify-refuses
+  (let [backend (memory/memory-store) calls (atom [])
+        _ (fs/accept-and-store! backend "r" "db" {:allow-initialize? true :candidate-root "root" :path [entry] :verify-entry (constantly true)})
+        verify (fn [_] (swap! calls conj :verify) true)]
+    (is (= :frontier-mismatch (reason #((basis/admission (config backend (constantly (assoc entry :root "other")) verify)) context))))
+    (is (= [] @calls))
+    (let [old (fs/read-frontier backend "r" "db")
+          next-entry (assoc entry :root "next" :commit (assoc commit :epoch 2 :parents ["root"]))
+          advance (fn [_] (fs/accept-and-store! backend "r" "db" {:candidate-root "next" :path [next-entry] :verify-entry (constantly true)}) true)]
+      (is (= :frontier-changed (reason #((basis/admission (config backend (constantly entry) advance)) context))))
+      (is (not= old (fs/read-frontier backend "r" "db"))))))

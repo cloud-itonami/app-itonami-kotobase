@@ -22,8 +22,11 @@
   entry's CID, signature, authority, checkpoint and binding to the physical
   basis and signed manifest; only literal true admits. Both may return a
   Promise in CLJS. This function itself checks the persisted frontier's root,
-  database, epoch and policy against the entry and request. Backing-store
-  rollback, untrusted callbacks and proof-fetch allocation are outside scope."
+  database, epoch and policy against the entry and request, and rereads the
+  frontier after verification. This detects a changed frontier during that
+  interval, not a change after admission; no transaction or lock is implied.
+  Backing-store rollback, untrusted callbacks and proof-fetch allocation are
+  outside scope."
   [{:keys [backend ref-name database-id fetch-entry! verify-entry!] :as config}]
   (when-not (and (map? config)
                  (= #{:backend :ref-name :database-id :fetch-entry! :verify-entry!}
@@ -47,16 +50,21 @@
                              (= database-id (:database-id commit))
                              (= (:authority/policy request) (:admission-policy-root commit)))
                 (reject! :entry-mismatch))
-              (then (verify-entry! (assoc context :entry entry))
-                    (fn [verified?]
-                      (when-not (true? verified?) (reject! :unverified-entry))
-                      (then (frontier/read-frontier backend ref-name database-id)
-                            (fn [saved]
-                              (when-not saved (reject! :missing-frontier))
-                              (when-not (and (= (:root entry) (get-in saved [:frontier :logical-commit-root]))
-                                             (= (:epoch commit) (get-in saved [:frontier :epoch])))
-                                (reject! :frontier-mismatch))
-                              true)))))))))
+              (then (frontier/read-frontier backend ref-name database-id)
+                    (fn [saved]
+                      (when-not saved (reject! :missing-frontier))
+                      (when-not (and (= (:root entry) (get-in saved [:frontier :logical-commit-root]))
+                                     (= (:epoch commit) (get-in saved [:frontier :epoch])))
+                        (reject! :frontier-mismatch))
+                      (then (verify-entry! (assoc context :entry entry))
+                            (fn [verified?]
+                              (when-not (true? verified?) (reject! :unverified-entry))
+                              ;; Verification may perform I/O; do not admit if the
+                              ;; frontier advanced while that work was in flight.
+                              (then (frontier/read-frontier backend ref-name database-id)
+                                    (fn [current]
+                                      (when-not (= saved current) (reject! :frontier-changed))
+                                      true)))))))))))
 
 (defn execute!
   "Run a governed read only after read-only persisted-basis admission."

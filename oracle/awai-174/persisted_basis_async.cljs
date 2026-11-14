@@ -22,6 +22,18 @@
                ((basis/admission (assoc config :verify-entry! (fn [_] (js/Promise.resolve false)))) context)))
       (.then (fn [_] (throw (js/Error. "bad proof admitted")))
              (fn [e] (ensure! (= :unverified-entry (:kotobase.persisted-basis/reason (ex-data e))) "wrong rejection")
-               (println "CLJS async persisted basis: valid and rejected signature pass")))
+               (reset! calls [])
+               ((basis/admission (assoc config :fetch-entry! (fn [_] (js/Promise.resolve (assoc entry :root "other"))))) context)))
+      (.then (fn [_] (throw (js/Error. "stale entry admitted")))
+             (fn [e] (ensure! (= :frontier-mismatch (:kotobase.persisted-basis/reason (ex-data e))) "wrong stale rejection")
+               (ensure! (empty? @calls) "stale entry invoked verifier")
+               ((basis/admission (assoc config :verify-entry!
+                 (fn [_] (-> (fs/accept-and-store! backend "r" "db"
+                              {:candidate-root "next" :path [(assoc entry :root "next" :commit (assoc (:commit entry) :epoch 2 :parents ["root"]))]
+                               :verify-entry (constantly true)})
+                             (.then (fn [_] true)))))) context)))
+      (.then (fn [_] (throw (js/Error. "changed frontier admitted")))
+             (fn [e] (ensure! (= :frontier-changed (:kotobase.persisted-basis/reason (ex-data e))) "wrong change rejection")
+               (println "CLJS async persisted basis: valid, stale, signature and frontier race pass")))
       (.catch (fn [e] (println e) (set! (.-exitCode js/process) 1)))))
 (set! *main-cli-fn* -main)
