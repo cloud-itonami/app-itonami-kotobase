@@ -41,6 +41,7 @@
   role as the one that ran a query:  is about what performed the
   work, not about which contract the record belongs to."
   {:execution-manifest :issuer
+   :authority-decision-commit :issuer
    :execution-receipt :executor
    :authority-execution-link :executor
    :effect-receipt :executor})
