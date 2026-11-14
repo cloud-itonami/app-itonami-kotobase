@@ -15,6 +15,20 @@
 
 (defn- nonempty? [x] (and (string? x) (seq x)))
 
+(defn checkpoint-reader
+  "Derive a checkpoint from a physical root via the existing engine API.
+
+  JVM engines must return immediate values; CLJS engines may return Promises.
+  ENGINE and its provider must validate fetched blocks and enforce resource
+  limits. This adapter does not make the resulting checkpoint authenticated;
+  `verifier` binds it to the signed logical commit before admitting a read."
+  [storage-engine]
+  (fn [physical-root]
+    (then (engine/restore-state storage-engine physical-root)
+          (fn [state]
+            (then (engine/open-snapshot storage-engine state)
+                  #(engine/checkpoint storage-engine %))))))
+
 (defn verifier
   "Build VERIFY-ENTRY! for `kotobase.persisted-basis/admission`.
 
