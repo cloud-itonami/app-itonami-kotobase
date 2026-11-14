@@ -1,0 +1,41 @@
+(ns kotobase.hosted-receipt-publication
+  "Synchronous hosted callbacks for a provisional receipt publication port.
+
+  The host owns block I/O, encryption, trust and ref publication. This module
+  builds the canonical peer commit and checks its receipt before publication;
+  it is not a Native implementation or a distributed transaction."
+  (:require [kotobase.causal-commit :as causal]
+            [kotobase-peer.core :as peer]))
+
+#?(:clj
+   (defn callbacks
+     "Return :build! and :verify! for an explicit provisional port adapter.
+
+     STAGE-BUNDLE! writes any request/manifest blocks through the provisional
+     port. ENCRYPT! is the host's peer transaction encryption function.
+     OPEN-READ-DB! constructs a read-only database using the supplied persisted
+     get-block function. VERIFY-BUNDLE! must authenticate all host-required
+     request, authority and signature bindings before returning literal true.
+     Neither callback grants trust or proves general DAG closure."
+     [{:keys [stage-bundle! encrypt! open-read-db! verify-bundle!] :as options}]
+     (when-not (and (map? options)
+                    (= #{:stage-bundle! :encrypt! :open-read-db! :verify-bundle!} (set (keys options)))
+                    (every? fn? [stage-bundle! encrypt! open-read-db! verify-bundle!]))
+       (throw (ex-info "invalid hosted receipt callbacks" {:type :invalid-receipt-callbacks})))
+     {:build! (fn [ports receipt prepared]
+                (when-not (and (map? ports) (fn? (:put! ports)) (fn? (:get-fn ports))
+                               (map? receipt) (map? prepared))
+                  (throw (ex-info "invalid receipt builder input" {:type :invalid-receipt-input})))
+                (stage-bundle! ports receipt prepared)
+                (peer/commit! (:put! ports) (:get-fn ports) (:tx-data prepared)
+                              (:receipt/basis-cid prepared) encrypt!))
+      :verify! (fn [get-block target receipt prepared]
+                 (when-not (true? (verify-bundle! get-block target receipt prepared))
+                   (throw (ex-info "receipt bundle refused" {:type :receipt-bundle-refused})))
+                 (let [proof (causal/receipt-at (open-read-db! get-block) target (:receipt/cid prepared))]
+                   (when-not (= {:receipt/basis-cid (:receipt/basis-cid prepared)
+                                 :receipt/stream causal/execution-stream
+                                 :receipt/records [receipt]}
+                                (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
+                     (throw (ex-info "receipt readback mismatch" {:type :receipt-readback-mismatch})))
+                   true))}))
