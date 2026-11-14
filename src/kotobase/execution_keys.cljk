@@ -114,6 +114,16 @@
                         :claimed (:key/algorithm signature))))
       (assoc context :key entry))))
 
+(defn authorized-key
+  "Resolve one unambiguous registered key for the caller's validated scope.
+
+  CONTEXT supplies :record, :tenant and :epoch; SIGNATURE is the version 1
+  envelope. This checks registry authorization only: it does not authenticate
+  the context, bind an issuer identity or verify a cryptographic signature."
+  [registry context signature]
+  (when-not (ifn? registry) (reject! :missing-registry {}))
+  (:key (authorised registry context (checked-signature signature))))
+
 (defn verifier
   "Build the `:verify` function `kotobase.governed-execution` requires.
 
@@ -135,7 +145,7 @@
   (fn [{:keys [payload-cid signature] :as context}]
     (when-not (non-empty-string? payload-cid)
       (reject! :invalid-payload-cid {}))
-    (let [{:keys [key]} (authorised registry context (checked-signature signature))]
+    (let [key (authorized-key registry context signature)]
       (true? (verify-with {:key key
                            :payload-cid payload-cid
                            :signature-value (:signature/value signature)})))))

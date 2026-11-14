@@ -1,0 +1,45 @@
+(ns kotobase.signed-basis-keys
+  "Registry-backed signature adapter for a signed logical basis.
+
+  The host authenticates the request tenant/epoch, supplies the scoped key
+  registry, binds issuer identity to that key and provides cryptography."
+  (:require [kotobase.execution-keys :as keys]
+            [kotobase.engine.identity :as identity]))
+
+(defn- reject! [reason]
+  (throw (ex-info "signed basis key refused"
+                  {:kotobase.signed-basis-keys/reason reason})))
+
+(defn verifier
+  "Build the synchronous :verify-signature! callback for signed-basis/verifier.
+
+  REGISTRY has the same role/tenant/epoch contract as execution-keys/verifier.
+  ISSUER-AUTHORIZED? receives issuer, tenant, epoch and the registered key.
+  VERIFY-WITH receives the registered key, exact canonical payload string and
+  signature. Both must return literal true. The configured algorithm is fixed
+  by the host and checked against the registry, never chosen by the entry.
+  The host still owns identity, revocation, registry durability and crypto.
+  This adapter neither verifies the commit root nor authenticates a request."
+  [{:keys [registry algorithm issuer-authorized? verify-with] :as config}]
+  (when-not (and (map? config)
+                 (= #{:registry :algorithm :issuer-authorized? :verify-with} (set (keys config)))
+                 (ifn? registry) (keyword? algorithm)
+                 (ifn? issuer-authorized?) (ifn? verify-with))
+    (reject! :invalid-config))
+  (fn [{:keys [entry request issuer key-id signature payload]}]
+    (when-not (and (map? entry) (map? request)
+                   (string? issuer) (seq issuer) (= issuer (:issuer entry))
+                   (string? key-id) (seq key-id) (= key-id (:key-id entry))
+                   (= signature (:signature entry)) (string? payload)
+                   (= payload (identity/signature-payload
+                               {:logical-commit-root (:root entry)
+                                :issuer issuer :key-id key-id})))
+      (reject! :invalid-context))
+    (let [tenant (:tenant request) epoch (:authority/epoch request)
+          signature-envelope {:key/id key-id :key/algorithm algorithm :signature/value signature}
+          key (keys/authorized-key registry
+                                   {:record :execution-manifest :tenant tenant :epoch epoch}
+                                   signature-envelope)]
+      (when-not (true? (issuer-authorized? {:issuer issuer :tenant tenant :epoch epoch :key key}))
+        (reject! :issuer-not-authorized))
+      (true? (verify-with {:key key :payload payload :signature-value signature})))))
