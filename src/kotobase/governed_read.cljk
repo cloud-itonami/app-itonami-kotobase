@@ -194,7 +194,9 @@
         commit (:commit request)
         value-cid (:value-cid request)
         receipt-cid (:receipt-cid-fn commit)]
-    (when-not (= #{:database :expected-basis-cid :receipt-cid-fn} (set (keys commit)))
+    (when-not (contains? #{#{:database :expected-basis-cid :receipt-cid-fn}
+                           #{:database :expected-basis-cid :receipt-cid-fn :publication}}
+                         (set (keys commit)))
       (reject! :invalid-commit-options {}))
     (when-not (and (ifn? value-cid) (ifn? receipt-cid))
       (reject! :invalid-cid-functions {}))
@@ -207,11 +209,18 @@
                  (let [a (value-cid value) b (receipt-cid value)]
                    (when-not (= a b) (reject! :receipt-cid-function-mismatch {})) a))
           prepared (persistent-request request nonce-config)
-          sink (causal/linked-execution-receipt-sink (:database commit)
-                 {:expected-basis-cid (:expected-basis-cid commit)
-                  :value-cid cid! :request (:request request) :query (:query request)
-                  :authority-receipt authority-receipt :verify-authority! auth!
-                  :sign (:sign request) :verify (:verify request)})]
+          sink-options {:expected-basis-cid (:expected-basis-cid commit)
+                        :value-cid cid! :request (:request request) :query (:query request)
+                        :authority-receipt authority-receipt :verify-authority! auth!
+                        :sign (:sign request) :verify (:verify request)}
+          publication (:publication commit)
+          sink (if (contains? commit :publication)
+                 (do
+                   (when-not (and (map? publication) (= #{:publish! :read-ref!} (set (keys publication))))
+                     (reject! :invalid-publication-options {}))
+                   (causal/published-linked-execution-receipt-sink (:database commit)
+                     (merge sink-options publication)))
+                 (causal/linked-execution-receipt-sink (:database commit) sink-options))]
       (basis/execute! (assoc (execution prepared) :commit! sink)
                       (registry-basis-config basis-config verification-config)))))
 

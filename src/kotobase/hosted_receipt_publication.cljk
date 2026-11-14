@@ -35,7 +35,7 @@
                  (let [proof (causal/receipt-at (open-read-db! get-block) target (:receipt/cid prepared))]
                    (when-not (= {:receipt/basis-cid (:receipt/basis-cid prepared)
                                  :receipt/stream causal/execution-stream
-                                 :receipt/records [receipt]}
+                                 :receipt/records (or (:receipt/records prepared) [receipt])}
                                 (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
                      (throw (ex-info "receipt readback mismatch" {:type :receipt-readback-mismatch})))
                    true))}))

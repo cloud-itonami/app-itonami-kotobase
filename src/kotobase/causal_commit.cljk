@@ -378,6 +378,23 @@
                      :receipt/record-count 1 :receipt/route :published-canonical-cid-dag}))))))))))
 
 
+(defn- linked-records!
+  [receipt {:keys [value-cid request query authority-receipt verify-authority! sign verify]}]
+  (contract/validate-receipt! receipt)
+  (when-not (true? (verify-authority! {:authority-receipt authority-receipt
+                                      :request request :query query}))
+    (reject! :authority-receipt-refused {}))
+  (let [receipt-id (value-cid receipt)
+        unsigned {:format link/format-id :request/digest (value-cid request)
+                  :execution-receipt/cid receipt-id
+                  :authority-receipt/cid (value-cid authority-receipt)
+                  :tenant (:tenant request) :epoch (:authority/epoch request)}
+        signed (assoc unsigned :signature (sign unsigned))]
+    (link/verify! {:link signed :request request :query query
+                   :execution-receipt receipt :authority-receipt authority-receipt
+                   :value-cid value-cid :verify verify})
+    [receipt authority-receipt signed]))
+
 (defn linked-execution-receipt-sink
   "Build an opt-in sink that commits a signed authority link with its records.
 
@@ -395,18 +412,40 @@
                  (every? ifn? [value-cid verify-authority! sign verify]))
     (reject! :invalid-linked-sink-options {}))
   (fn [receipt]
-    (contract/validate-receipt! receipt)
-    (when-not (true? (verify-authority! {:authority-receipt authority-receipt
-                                        :request request :query query}))
-      (reject! :authority-receipt-refused {}))
-    (let [receipt-id (value-cid receipt)
-          unsigned {:format link/format-id :request/digest (value-cid request)
-                    :execution-receipt/cid receipt-id
-                    :authority-receipt/cid (value-cid authority-receipt)
-                    :tenant (:tenant request) :epoch (:authority/epoch request)}
-          signed (assoc unsigned :signature (sign unsigned))]
-      (link/verify! {:link signed :request request :query query
-                     :execution-receipt receipt :authority-receipt authority-receipt
-                     :value-cid value-cid :verify verify})
-      (commit-records! database execution-stream receipt-id expected-basis-cid
-                       [receipt authority-receipt signed]))))
+    (commit-records! database execution-stream (value-cid receipt) expected-basis-cid
+                     (linked-records! receipt options))))
+
+(defn published-linked-execution-receipt-sink
+  "Publish and read back a linked receipt through an explicit host transaction.
+
+  The host must verify the persisted bundle before its ref CAS. Nonce and ref
+  publication remain separate transactions; host trust and fencing are required."
+  [database {:keys [expected-basis-cid value-cid publish! read-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :value-cid :request :query :authority-receipt
+                      :verify-authority! :sign :verify :publish! :read-ref!} (set (keys options)))
+                 (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+                 (every? ifn? ((juxt :value-cid :verify-authority! :sign :verify :publish! :read-ref!) options)))
+    (reject! :invalid-linked-sink-options {}))
+  (fn [receipt]
+    (let [records (linked-records! receipt options)
+          receipt-id (value-cid receipt)
+          _ (when-not (non-empty-string? receipt-id) (reject! :invalid-receipt-cid {}))
+          prepared {:receipt/cid receipt-id :receipt/basis-cid expected-basis-cid
+                    :receipt/records records
+                    :tx-data (transaction-data execution-stream receipt-id expected-basis-cid records)}]
+      (then (publish! {:receipt receipt :prepared prepared})
+        (fn [commit-cid]
+          (when-not (non-empty-string? commit-cid) (reject! :invalid-published-commit {}))
+          (then (read-ref!)
+            (fn [ref-cid]
+              (when-not (= commit-cid ref-cid) (reject! :published-ref-mismatch {}))
+              (then (receipt-at database commit-cid receipt-id)
+                (fn [proof]
+                  (when-not (= {:receipt/basis-cid expected-basis-cid
+                                :receipt/stream execution-stream :receipt/records records}
+                               (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
+                    (reject! :write-proof-mismatch {}))
+                  {:receipt/durable? true :receipt/cid receipt-id :receipt/commit-cid commit-cid
+                   :receipt/basis-cid expected-basis-cid :receipt/record-count 3
+                   :receipt/route :published-canonical-cid-dag})))))))))
