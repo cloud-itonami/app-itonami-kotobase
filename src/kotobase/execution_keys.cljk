@@ -98,6 +98,10 @@
     (run! #(checked-registered % scope) registered)
     (let [by-id (into {} (map (juxt :key/id identity)) registered)
           entry (get by-id (:key/id signature))]
+      ;; A key ID must identify one key within a scope. `into {}` alone silently
+      ;; chooses the last duplicate, making authorization depend on registry order.
+      (when-not (= (count registered) (count by-id))
+        (reject! :duplicate-key-id scope))
       (when-not entry
         (reject! :key-not-authorised-here
                  (assoc scope :key-id (:key/id signature)
