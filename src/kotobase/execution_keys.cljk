@@ -42,6 +42,7 @@
   work, not about which contract the record belongs to."
   {:execution-manifest :issuer
    :execution-receipt :executor
+   :authority-execution-link :executor
    :effect-receipt :executor})
 
 (def signature-keys
