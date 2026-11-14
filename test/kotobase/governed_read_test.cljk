@@ -13,6 +13,8 @@
             [kotobase.core :as core]
             [kotobase.evidence :as evidence]
             [kotobase.execution-identity :as id]
+            [kotobase.engine.identity :as engine-id]
+            [kotobase.frontier-store :as frontier]
             [kotobase.governed-execution-test :as contract-fixture]
             [kotobase.governed-read :as governed-read]
             [kotobase.storage.memory :as memory]))
@@ -179,3 +181,36 @@
                (reason #(governed-read/read! (dissoc request k))))
             (str "removing " k " should refuse the read"))))
     (is (false? @evaluated))))
+
+(deftest bound-read-gates-the-canonical-receipt-path
+  (let [backend (memory/memory-store)
+        db (database backend)
+        basis (seed! db)
+        entry {:root "fixture-root"
+               :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
+                        :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
+                        :schema-root "schema" :model-contract-root "model"
+                        :admission-policy-root "bafy-policy"}}
+        _ (frontier/accept-and-store! backend "frontier" "db"
+            {:allow-initialize? true :candidate-root (:root entry) :path [entry]
+             :verify-entry (constantly true)})
+        checked (atom []) evaluated (atom false)
+        config {:backend backend :ref-name "frontier" :database-id "db"
+                :fetch-entry! (fn [_] (swap! checked conj :fetch) entry)
+                :verify-entry! (fn [_] (swap! checked conj :verify) true)}
+        req (request-at db basis evaluated)
+        result (governed-read/read-bound! req config)
+        proof (causal/receipt-at db (get-in result [:provenance :receipt-commit-cid])
+                                 "bafy-execution-receipt")]
+    (is (= [:fetch :verify] @checked))
+    (is (= served (:rows result)))
+    (is (= [(:execution/receipt result)] (:receipt/records proof)))
+    (let [events (atom []) rejected (atom false)
+          req (request-at db basis rejected
+                :authority (assoc (:authority (request-at db basis rejected))
+                                  :consume-nonce! (fn [_] (swap! events conj :nonce) true)))
+          config (assoc config :verify-entry! (fn [_] (swap! events conj :verify) false))]
+      (is (some? (try (governed-read/read-bound! req config) nil
+                      (catch kerror/ExceptionInfo e e))))
+      (is (= [:verify] @events))
+      (is (false? @rejected)))))

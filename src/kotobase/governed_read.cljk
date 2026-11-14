@@ -32,7 +32,8 @@
     by every caller, so the easy way to call this is also the one that reads
     its receipt back before releasing rows."
   (:require [kotobase.causal-commit :as causal]
-            [kotobase.governed-execution :as governed]))
+            [kotobase.governed-execution :as governed]
+            [kotobase.persisted-basis :as basis]))
 
 (def ^:private read-keys
   #{:commit :authority-decision
@@ -109,11 +110,29 @@
   [request]
   (governed/execute! (execution (validated! request))))
 
+(defn read-bound!
+  "Read through the canonical receipt sink after persisted basis admission.
+
+  BASIS-CONFIG is passed to persisted-basis/admission; its host callbacks and
+  backing store must provide the documented signature, location and frontier
+  guarantees. This API does not create or advance the trusted frontier."
+  [request basis-config]
+  (basis/execute! (execution (validated! request)) basis-config))
+
 #?(:cljs
    (defn read-async!
      "The Worker path. Rows are withheld while anything is still in flight."
      [request]
      (try
        (governed/execute-async! (execution (validated! request)))
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-bound-async!
+     "Promise-aware bound read with the same canonical receipt sink."
+     [request basis-config]
+     (try
+       (basis/execute-async! (execution (validated! request)) basis-config)
        (catch :default error
          (js/Promise.reject error)))))
