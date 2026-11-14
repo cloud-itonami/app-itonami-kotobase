@@ -29,3 +29,11 @@
     (is (= :checkpoint-mismatch (reason #((signed/verifier (assoc config :checkpoint! (constantly (merge checkpoint change)))) context)))))
   (is (= :signature-refused (reason #((signed/verifier config) (assoc-in context [:entry :signature] "wrong")))))
   (is (= :signature-refused (reason #((signed/verifier config) (assoc-in context [:entry :key-id] "wrong"))))))
+
+(deftest refused-signature-never-opens-checkpoint
+  (let [calls (atom [])
+        check (signed/verifier (assoc config
+                                :checkpoint! (fn [_] (swap! calls conj :checkpoint) checkpoint)
+                                :verify-signature! (fn [_] (swap! calls conj :signature) false)))]
+    (is (= :signature-refused (reason #(check context))))
+    (is (= [:signature] @calls))))

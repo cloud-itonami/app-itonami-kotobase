@@ -63,18 +63,18 @@
                 (then (verify-location! context)
                       (fn [location-ok?]
                         (when-not (true? location-ok?) (reject! :location-refused))
-                        (then (checkpoint! physical-root)
-                              (fn [cp]
-                                (engine/validate-checkpoint cp)
-                                (when-not (and (= physical-root (:physical-root cp))
-                                               (= (:database-id commit) (:database-id cp))
-                                               (= (:epoch commit) (:epoch cp))
-                                               (= (:logical-checkpoint-root commit) (:logical-checkpoint-root cp)))
-                                  (reject! :checkpoint-mismatch))
-                                (then (verify-signature!
-                                       (assoc context :issuer issuer :key-id key-id :signature signature
-                                              :payload (identity/signature-payload
-                                                        {:logical-commit-root root :issuer issuer :key-id key-id})))
-                                      (fn [verified?]
-                                        (when-not (true? verified?) (reject! :signature-refused))
+                        (then (verify-signature!
+                               (assoc context :issuer issuer :key-id key-id :signature signature
+                                      :payload (identity/signature-payload
+                                                {:logical-commit-root root :issuer issuer :key-id key-id})))
+                              (fn [verified?]
+                                (when-not (true? verified?) (reject! :signature-refused))
+                                (then (checkpoint! physical-root)
+                                      (fn [cp]
+                                        (engine/validate-checkpoint cp)
+                                        (when-not (and (= physical-root (:physical-root cp))
+                                                       (= (:database-id commit) (:database-id cp))
+                                                       (= (:epoch commit) (:epoch cp))
+                                                       (= (:logical-checkpoint-root commit) (:logical-checkpoint-root cp)))
+                                          (reject! :checkpoint-mismatch))
                                         true))))))))))))
