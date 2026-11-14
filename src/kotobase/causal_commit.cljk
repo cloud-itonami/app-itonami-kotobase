@@ -262,6 +262,34 @@
                      (:causal.receipt/id receipt)
                      expected-basis [receipt])))
 
+#?(:clj
+   (defn decision-receipt-authenticator
+     "Authenticate a host-verified decision commit and read back its exact receipt.
+
+     VERIFY-COMMIT! must authenticate the commit CID and context against an
+     independently trusted issuer, keys, revocation and policy. This adapter
+     only checks its literal true answer and verifies the named decision record
+     at the exact immutable commit; it does not establish freshness or prevent
+     rollback of host trust state. The adapter is synchronous and JVM-only."
+     [database {:keys [commit-cid verify-commit!] :as options}]
+     (when-not (and (= #{:commit-cid :verify-commit!} (set (keys options)))
+                    (non-empty-string? commit-cid) (ifn? verify-commit!))
+       (reject! :invalid-decision-authenticator {}))
+     (fn [{:keys [authority-receipt request query] :as context}]
+       (when-not (= #{:authority-receipt :request :query} (set (keys context)))
+         (reject! :invalid-authority-context {}))
+       (trust/receipt authority-receipt)
+       (when-not (true? (verify-commit! (assoc context :commit-cid commit-cid)))
+         (reject! :decision-commit-refused {}))
+       (let [proof (receipt-at database commit-cid (:causal.receipt/id authority-receipt))]
+         (when-not (= {:receipt/id (:causal.receipt/id authority-receipt)
+                       :receipt/commit-cid commit-cid
+                       :receipt/basis-cid (:causal.receipt/basis-cid authority-receipt)
+                       :receipt/stream decision-stream :receipt/records [authority-receipt]}
+                      proof)
+           (reject! :decision-receipt-mismatch {}))
+         true))))
+
 (defn execution-receipt-sink
   "Build the `:commit!` that `kotobase.governed-execution` requires.
 
