@@ -36,6 +36,7 @@
             [kotobase.governed-execution :as governed]
             [kotobase.persisted-basis :as basis]
             [kotobase.nonce-store :as nonce]
+            [kotobase.signed-basis-keys :as basis-keys]
             [kotoba.value.codec :as codec]))
 
 (def ^:private read-keys
@@ -146,6 +147,22 @@
   [request basis-config nonce-config]
   (read-bound! (persistent-request request nonce-config) basis-config))
 
+(defn- registry-basis-config [basis-config verification-config]
+  (when-not (and (map? basis-config)
+                 (= #{:backend :ref-name :database-id :fetch-entry!} (set (keys basis-config))))
+    (reject! :invalid-registry-basis-config {}))
+  (assoc basis-config :verify-entry! (basis-keys/entry-verifier verification-config)))
+
+(defn read-registry-persistent!
+  "Read with a registry-bound signed basis, persisted nonce and causal receipt.
+
+  BASIS-CONFIG supplies the frontier backend, ref, database and proof fetch;
+  VERIFICATION-CONFIG supplies every digest, checkpoint, location, registry,
+  issuer and cryptographic control. No unbound-read fallback is selected. The
+  host must authenticate the request and own all trust and storage controls."
+  [request basis-config verification-config nonce-config]
+  (read-persistent! request (registry-basis-config basis-config verification-config) nonce-config))
+
 #?(:cljs
    (defn read-async!
      "The Worker path. Rows are withheld while anything is still in flight."
@@ -170,5 +187,14 @@
      [request basis-config nonce-config]
      (try
        (read-bound-async! (persistent-request request nonce-config) basis-config)
+       (catch :default error
+         (js/Promise.reject error)))))
+
+#?(:cljs
+   (defn read-registry-persistent-async!
+     "Promise-aware entry; key registry, issuer and crypto callbacks stay synchronous."
+     [request basis-config verification-config nonce-config]
+     (try
+       (read-persistent-async! request (registry-basis-config basis-config verification-config) nonce-config)
        (catch :default error
          (js/Promise.reject error)))))

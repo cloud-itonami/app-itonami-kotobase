@@ -4,7 +4,8 @@
   The host authenticates the request tenant/epoch, supplies the scoped key
   registry, binds issuer identity to that key and provides cryptography."
   (:require [kotobase.execution-keys :as keys]
-            [kotobase.engine.identity :as identity]))
+            [kotobase.engine.identity :as identity]
+            [kotobase.signed-basis :as signed]))
 
 (defn- reject! [reason]
   (throw (ex-info "signed basis key refused"
@@ -43,3 +44,20 @@
       (when-not (true? (issuer-authorized? {:issuer issuer :tenant tenant :epoch epoch :key key}))
         (reject! :issuer-not-authorized))
       (true? (verify-with {:key key :payload payload :signature-value signature})))))
+
+(defn entry-verifier
+  "Build the signed-basis admission verifier using the scoped key adapter.
+
+  The host supplies every trust, digest, location and checkpoint control. The
+  registry and signature callbacks remain synchronous; other signed-basis
+  callbacks may use the Promise behavior documented by signed-basis/verifier."
+  [{:keys [digest! checkpoint! verify-location! registry algorithm issuer-authorized? verify-with]
+    :as config}]
+  (when-not (and (map? config)
+                 (= #{:digest! :checkpoint! :verify-location! :registry :algorithm
+                      :issuer-authorized? :verify-with} (set (keys config))))
+    (reject! :invalid-config))
+  (signed/verifier {:digest! digest! :checkpoint! checkpoint! :verify-location! verify-location!
+                    :verify-signature! (verifier {:registry registry :algorithm algorithm
+                                                  :issuer-authorized? issuer-authorized?
+                                                  :verify-with verify-with})}))

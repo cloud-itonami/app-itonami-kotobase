@@ -243,3 +243,18 @@
     (is (zero? @external))
     (is (= :invalid-nonce-config
            (reason #(governed-read/read-persistent! request config (assoc nonce-config :scope "caller-selected")))))))
+
+(deftest registry-persistent-read-refuses-a-caller-verifier-override
+  (let [called (atom false)
+        config {:backend nil :ref-name "frontier" :database-id "db"
+                :fetch-entry! (fn [_] (reset! called true))
+                :verify-entry! (constantly true)}]
+    (is (= :invalid-registry-basis-config
+           (reason #(governed-read/read-registry-persistent! {} config {} {}))))
+    (is (false? @called))
+    (let [basis (dissoc config :verify-entry!)
+          failure (try (governed-read/read-registry-persistent!
+                        {} basis {:verify-signature! (constantly true)} {})
+                       nil (catch kerror/ExceptionInfo e (ex-data e)))]
+      (is (= :invalid-config (:kotobase.signed-basis-keys/reason failure)))
+      (is (false? @called)))))
