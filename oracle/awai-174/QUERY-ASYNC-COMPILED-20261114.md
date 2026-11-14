@@ -22,9 +22,11 @@ node query.js
 ```
 
 The repository-wide Worker suite did not run: normal dependency resolution
-could not clone the old `kotobase-engine` URL. A clean local checkout at the
-specified engine SHA `b8b163e889341cdf49217570380872e0575fcbdd` was available;
-overriding only that dependency then encountered the unavailable
-`kotoba-core-contracts` URL. Both clone attempts failed, and their canonical
-replacement or access status remains unknown. This probe is not a full Worker
+could not clone the old `kotobase-engine` URL. The specified engine SHA
+`b8b163e889341cdf49217570380872e0575fcbdd` exists in local Git history, but
+the local checkout was actually at `a1ff23ade4f4ceca520311a99961e28fe6619f59`.
+The earlier assertion that the checkout matched the pin was incorrect. A
+scratch archive of the exact pinned commit subsequently exposed further
+unavailable historical dependency URLs and local-root conflicts; they remain
+unresolved. This probe is not a full Worker
 suite, durable receipt, Native gate, deployment or resource-bound proof.
