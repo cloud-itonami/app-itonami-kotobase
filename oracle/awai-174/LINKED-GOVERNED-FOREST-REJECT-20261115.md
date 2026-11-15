@@ -1,0 +1,7 @@
+# Linked governed Forest pre-CAS rejection, 2026-11-15
+
+Using the hosted signed-basis / policy Datalog / linked receipt / Otehon Forest composition and environment documented in `LINKED-GOVERNED-FOREST-20261115.md`, a separate new store was run with `REJECT_BUNDLE=1`. The host bundle verifier threw the injected `:injected-rejection` exception after the batch had been persisted and before ref CAS; the read returned an exception rather than rows. In a separate JVM, `linked_governed_forest_reject_inspect.clj` confirmed the `linked-governed` ref was absent, the scoped nonce ref was present, and two immutable Forest groups were present. This reflects the existing separate nonce and receipt transactions and orphan data behavior; the same nonce cannot be silently retried as a fresh request.
+
+Local macOS ARM, OpenJDK 21.0.1 / Clojure 1.12.5; Kotobase source revision `0209193027df1208b112e5e1af0b39e6c90c9ae2`, Otehon source and Forest tool as in the preceding evidence. Reject script SHA-256 `fbf0ca6ec4ef9a2fcce35fb15c9e63476eee2d8d9f837b8d06113dc5801c98b8`; independent inspection script `315d3bfadcf7b3cc6d13b758760c384319d1271aa12bf837106accc88605f42e`. The negative store and stages remain in task scratch. No dependencies were downloaded.
+
+This is an injected verifier exception, not a process kill or a physical fault. Keys, authority and policy are fixtures; it does not prove Native, guest-reboot recovery, production trust, cleanup of orphan groups, or atomicity between nonce consumption and publication.
