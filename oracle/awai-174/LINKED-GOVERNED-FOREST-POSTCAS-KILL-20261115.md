@@ -1,0 +1,7 @@
+# Linked governed Forest process stop after CAS, 2026-11-15
+
+The hosted fixture and environment in `LINKED-GOVERNED-FOREST-20261115.md` were run against a new task-owned store. The test wrapper recorded the receipt CID and a successfully read published ref after `publish!` returned, then slept before returning that ref to the receipt sink. Once the marker was present, the dedicated JVM was sent `SIGKILL` and exited 137; no rows were returned. A separate JVM verified the published ref, all three linked records, the link signature and the two deterministic attachment blocks. The task-owned marker and store remain available. The ref may have been published despite the caller receiving no result: a retry must not treat that ambiguity as a confirmed failure.
+
+Local macOS ARM, OpenJDK 21.0.1 / Clojure 1.12.5; Kotobase source `2c4bf6a200a2d76a624aee782e6cdb67a6f75fb0`; Otehon source and Forest tool are as in the earlier evidence. Test script SHA-256 `f37ce723e6e615a1d872c833707e6e03da83e1d25167bfe3bc725c9e262151b9`; marker `509c780498bcb4549650a3bc175c5f8ef67d0a225c0deb3cebf38ed0a1c2d151`. The marker was copied to the separate reader's expected IDs filename. No dependencies were downloaded.
+
+This checks one process-stop point with fixture identity and keys, not an OS reboot, physical power loss, Native execution, distributed fencing, or product-level retry resolution. The saved marker is a test aid, not a production recovery protocol.
