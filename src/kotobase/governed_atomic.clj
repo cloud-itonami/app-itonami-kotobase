@@ -5,6 +5,7 @@
   commits the exact prepared marker together with the durable receipt. This module
   does not implement that storage transaction, authority or distributed fencing."
   (:require [kotobase.execution-contract :as contract]
+            [kotobase.execution-keys :as keys]
             [kotobase.governed-execution :as governed]
             [kotobase.nonce-store :as nonce]
             [kotoba.value.codec :as codec]))
@@ -63,3 +64,13 @@
           (assoc :commit! commit!)
           (assoc-in [:authority :consume-nonce!] consume!))
       admit-basis!)))
+
+(defn execute-registry-bound!
+  "Run the bound hosted path with the existing scoped execution-key verifier.
+  VERIFICATION is passed to `execution-keys/verifier`. The host owns registry
+  authenticity, cryptographic implementation, principal admission, time and
+  ledger durability; key lookup alone does not establish authority."
+  [options host verification]
+  (when-not (and (map? options) (not (contains? options :verify)))
+    (reject! :invalid-verifier-options))
+  (execute-bound! (assoc options :verify (keys/verifier verification)) host))
