@@ -1,0 +1,7 @@
+# Linked governed Forest process stop before CAS, 2026-11-15
+
+Using the environment and fixture inputs in `LINKED-GOVERNED-FOREST-20261115.md`, a new task-owned store ran the linked governed read with `linked_governed_forest_kill.clj`. Its pre-CAS verifier wrote a marker after the batch-persistence call and slept. After observing the marker and identifying the dedicated JVM process, the host sent that process `SIGKILL`; its command exited 137 and returned no rows. A fresh JVM ran `linked_governed_forest_reject_inspect.clj` against the store: the `linked-governed` ref was absent, the nonce ref existed, and two immutable Forest groups remained. The marker, data and staging are retained in task scratch.
+
+The test ran on macOS ARM with OpenJDK 21.0.1 / Clojure 1.12.5; Kotobase revision `016156284065f198c075c8d3cdbac375077ba28c`, Otehon source and Forest tool as in the preceding evidence. Kill script SHA-256 `a80059619bb9f0fc226171b4e1968cda0813e7c5ee0ad9225084751fedb6cb83`; independent inspector `315d3bfadcf7b3cc6d13b758760c384319d1271aa12bf837106accc88605f42e`. No dependencies were downloaded.
+
+This observes one controlled process-stop point, not arbitrary crash points, OS-cache loss, physical power loss, Native execution, or production trust. The nonce and receipt remain separate transactions; surviving immutable groups are not evidence of a published receipt and require a separately safe retention/GC design.
