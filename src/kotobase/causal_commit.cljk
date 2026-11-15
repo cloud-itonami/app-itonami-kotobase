@@ -378,6 +378,43 @@
                      :receipt/record-count 1 :receipt/route :published-canonical-cid-dag}))))))))))
 
 
+(defn published-atomic-execution-receipt-sink
+  "Build a two-argument `(fn [receipt prepared-nonce] ack)` for a trusted
+  atomic publisher. PUBLISH! receives {:receipt :prepared :nonce}, and must
+  bind and verify the nonce semantics while atomically committing its absent
+  ref with the receipt closure. The host authenticates the request and owns
+  the stable replay domain. This sink checks receipt ref and exact immutable
+  receipt through the existing published sink, then checks the nonce ref
+  before returning its durable acknowledgement. Readback does not itself
+  establish atomicity, prevent rollback or authenticate the publisher."
+  [database {:keys [expected-basis-cid receipt-cid-fn publish! read-ref! read-nonce-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :receipt-cid-fn :publish! :read-ref! :read-nonce-ref!}
+                    (set (keys options)))
+                 (ifn? publish!) (ifn? read-ref!) (ifn? read-nonce-ref!))
+    (reject! :invalid-publication-sink-options {}))
+  (let [prepare-options {:expected-basis-cid expected-basis-cid
+                         :receipt-cid-fn receipt-cid-fn}]
+    (execution-sink-options! prepare-options)
+    (fn [receipt prepared-nonce]
+      (when-not (and (map? prepared-nonce)
+                     (= #{:ref-name :marker-cid :marker :bytes} (set (keys prepared-nonce)))
+                     (non-empty-string? (:ref-name prepared-nonce))
+                     (non-empty-string? (:marker-cid prepared-nonce))
+                     (map? (:marker prepared-nonce)) (some? (:bytes prepared-nonce)))
+        (reject! :invalid-prepared-nonce {}))
+      (let [sink (published-execution-receipt-sink
+                   database (assoc prepare-options :read-ref! read-ref!
+                              :publish! (fn [input]
+                                          (publish! (assoc input :nonce prepared-nonce)))))]
+        (then (sink receipt)
+          (fn [ack]
+            (then (read-nonce-ref! (:ref-name prepared-nonce))
+              (fn [ref]
+                (when-not (and (map? ref) (= (:marker-cid prepared-nonce) (:cid ref)))
+                  (reject! :published-nonce-ref-mismatch {}))
+                ack))))))))
+
 (defn- linked-records!
   [receipt {:keys [value-cid request query authority-receipt verify-authority! sign verify]}]
   (contract/validate-receipt! receipt)
