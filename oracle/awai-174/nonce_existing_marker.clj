@@ -14,7 +14,12 @@
                  {:published? false :current (get @refs n) :version 1})))
            s/IBackendCapabilities (-capabilities [_] #{:immutable-blocks :cid-addressed-read :conditional-ref :single-writer-ref}))
       consume (nonce/consumer {:backend db :scope "scope" :single-writer? true})]
+ (let [prepared (nonce/prepare-marker "scope" "a")]
+  (check! (true? (nonce/available? db "scope" "a")) "fresh preflight refused")
+  (check! (zero? @puts) "preflight wrote block")
+  (check! (and (string? (:ref-name prepared)) (string? (:marker-cid prepared)) (:bytes prepared)) "invalid prepared marker"))
  (check! (true? (consume "a")) "fresh nonce refused")
+ (check! (false? (nonce/available? db "scope" "a")) "consumed preflight allowed")
  (let [n @puts] (check! (false? (consume "a")) "replay accepted") (check! (= n @puts) "replay wrote block"))
  (let [cid (first (vals @refs)) original (get @blocks cid)]
   (swap! blocks dissoc cid)

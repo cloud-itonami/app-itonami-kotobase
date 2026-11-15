@@ -14,6 +14,50 @@
   #?(:clj (f v) :cljs (.then (js/Promise.resolve v) f)))
 (defn- bounded-text? [x n] (and (string? x) (<= 1 (count x) n)))
 
+(defn prepare-marker
+  "Compute the canonical marker for SCOPE and NONCE without storage effects.
+
+  The result may be staged by a trusted atomic publisher. It grants no
+  authority and does not reserve the nonce. Its bytes, ref and scope must be
+  bound to the same request and checked by the publication verifier."
+  [scope nonce]
+  (when-not (bounded-text? scope 512) (reject! :invalid-scope))
+  (when-not (bounded-text? nonce 1024) (reject! :invalid-nonce))
+  (let [key-value {:format :kotobase.nonce/key-v1 :scope scope :nonce nonce}
+        _ (codec/encode-bounded key-value (:max-bytes limits))
+        key-cid (codec/value-cid key-value)
+        marker {:format :kotobase.nonce/consumed-v1 :key-cid key-cid}
+        bytes (codec/encode-bounded marker (:max-bytes limits))
+        cid (codec/value-cid marker)]
+    {:ref-name (str "nonce/v1/" key-cid) :marker-cid cid :marker marker :bytes bytes}))
+
+(defn- verify-marker! [backend {:keys [marker-cid marker]}]
+  (then (storage/-get-blocks backend [marker-cid])
+        (fn [blocks]
+          (let [stored (get blocks marker-cid)]
+            (when-not (and stored (= marker (codec/verify-value-cid-structurally-bounded marker-cid stored limits)))
+              (reject! :invalid-marker)))
+          true)))
+
+(defn- available-prepared? [backend {:keys [ref-name marker-cid] :as prepared}]
+  (then (storage/-read-ref backend ref-name)
+        (fn [current]
+          (if (nil? current) true
+            (do
+              (when-not (and (map? current) (= marker-cid (:cid current)))
+                (reject! :invalid-nonce-ref))
+              (then (verify-marker! backend prepared) (fn [_] false)))))))
+
+(defn available?
+  "Read-only, non-reserving observation of a nonce, returning bool or Promise.
+
+  True can become stale immediately. Never treat it as admission: before any
+  result is released, a trusted publisher must atomically recheck the absent
+  ref and publish the exact marker and receipt under the same local root."
+  [backend scope nonce]
+  (storage/validate-backend! backend)
+  (available-prepared? backend (prepare-marker scope nonce)))
+
 (defn consumer
   "Build a one-shot `(fn [nonce] boolean-or-Promise)` for authority-window.
 
@@ -31,35 +75,17 @@
   (when (and (= :single-writer-ref (storage/ref-profile backend)) (not single-writer?))
     (reject! :single-writer-not-asserted))
   (fn [nonce]
-    (when-not (bounded-text? nonce 1024) (reject! :invalid-nonce))
-    (let [key-value {:format :kotobase.nonce/key-v1 :scope scope :nonce nonce}
-          _ (codec/encode-bounded key-value (:max-bytes limits))
-          key-cid (codec/value-cid key-value)
-          marker {:format :kotobase.nonce/consumed-v1 :key-cid key-cid}
-          bytes (codec/encode-bounded marker (:max-bytes limits))
-          cid (codec/value-cid marker)
-          ref-name (str "nonce/v1/" key-cid)]
-      (let [verify-marker! (fn []
-                             (then (storage/-get-blocks backend [cid])
-                                   (fn [blocks]
-                                     (let [stored (get blocks cid)]
-                                       (when-not (and stored (= marker (codec/verify-value-cid-structurally-bounded cid stored limits)))
-                                         (reject! :invalid-marker)))
-                                     true)))]
-        (then (storage/-read-ref backend ref-name)
-              (fn [current]
-                (if (nil? current)
-                  (then (storage/-put-blocks! backend [{:cid cid :bytes bytes}])
-                        (fn [_]
-                          (then (verify-marker!)
-                                (fn [_]
-                                  (then (storage/-compare-and-set-ref! backend ref-name nil cid)
-                                        (fn [result]
-                                          (when-not (and (map? result) (boolean? (:published? result))
-                                                         (= cid (:current result)))
-                                            (reject! :invalid-cas-result))
-                                          (true? (:published? result))))))))
-                  (do
-                    (when-not (and (map? current) (= cid (:cid current)))
-                      (reject! :invalid-nonce-ref))
-                    (then (verify-marker!) (fn [_] false))))))))))
+    (let [{:keys [ref-name marker-cid bytes] :as prepared} (prepare-marker scope nonce)]
+      (then (available-prepared? backend prepared)
+            (fn [available]
+              (if-not available false
+                (then (storage/-put-blocks! backend [{:cid marker-cid :bytes bytes}])
+                      (fn [_]
+                        (then (verify-marker! backend prepared)
+                              (fn [_]
+                                (then (storage/-compare-and-set-ref! backend ref-name nil marker-cid)
+                                      (fn [result]
+                                        (when-not (and (map? result) (boolean? (:published? result))
+                                                       (= marker-cid (:current result)))
+                                          (reject! :invalid-cas-result))
+                                        (true? (:published? result))))))))))))))
