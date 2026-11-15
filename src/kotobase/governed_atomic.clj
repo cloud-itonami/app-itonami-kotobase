@@ -4,19 +4,34 @@
   The host supplies an authenticated, stable scope and a publisher that atomically
   commits the exact prepared marker together with the durable receipt. This module
   does not implement that storage transaction, authority or distributed fencing."
-  (:require [kotobase.governed-execution :as governed]
-            [kotobase.nonce-store :as nonce]))
+  (:require [kotobase.execution-contract :as contract]
+            [kotobase.governed-execution :as governed]
+            [kotobase.nonce-store :as nonce]
+            [kotoba.value.codec :as codec]))
 
 (defn- reject! [reason]
   (throw (ex-info "atomic governed execution refused"
                   {:kotobase.governed-atomic/reason reason})))
 
+(defn request-scope
+  "Derive the versioned replay domain from a structurally valid request.
+  This does not authenticate its principal, tenant, graph or epoch. The trusted
+  host must authenticate these fields and ensure its durable ledger uses this
+  exact domain. Different graphs or epochs deliberately have distinct scopes."
+  [request]
+  (contract/validate-request! request)
+  (codec/value-cid {:format :kotobase.nonce/request-scope-v1
+                    :tenant (:tenant request) :principal (:principal request)
+                    :graph (:graph request) :epoch (:authority/epoch request)}))
+
 (defn execute-bound!
   "Run a synchronous governed read and pass its exact request-bound marker to
   PUBLISH! `(fn [receipt prepared-marker] durable-ack)`. The publisher is a
   trusted host component: it must verify marker semantics and atomically commit
-  its absent ref with the receipt and all required blocks. SCOPE must be a stable
-  authenticated replay domain. Preflight does not reserve a nonce; concurrent
+  its absent ref with the receipt and all required blocks. SCOPE must equal the
+  request-derived domain; the host must authenticate its fields and use the
+  same durable ledger. Existing ledgers in another domain need explicit migration.
+  Preflight does not reserve a nonce; concurrent
   evaluations are possible, but the losing publisher must fail closed. This is
   not a Native execution path or a distributed/anti-rollback guarantee."
   [options {:keys [backend scope publish! admit-basis!] :as host}]
@@ -28,6 +43,8 @@
     (reject! :invalid-options))
   (let [request (:request options)
         request-nonce (:nonce request)
+        derived-scope (request-scope request)
+        _ (when-not (= scope derived-scope) (reject! :scope-mismatch))
         marker (nonce/prepare-marker scope request-nonce)
         checked (atom false)
         publishing (atom false)
