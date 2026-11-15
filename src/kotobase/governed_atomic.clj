@@ -5,6 +5,7 @@
   commits the exact prepared marker together with the durable receipt. This module
   does not implement that storage transaction, authority or distributed fencing."
   (:require [kotobase.execution-contract :as contract]
+            [kotobase.causal-commit :as causal]
             [kotobase.execution-keys :as keys]
             [kotobase.governed-execution :as governed]
             [kotobase.nonce-store :as nonce]
@@ -74,3 +75,24 @@
   (when-not (and (map? options) (not (contains? options :verify)))
     (reject! :invalid-verifier-options))
   (execute-bound! (assoc options :verify (keys/verifier verification)) host))
+
+(defn execute-published-registry-bound!
+  "Compose a governed read with canonical receipt and nonce readback.
+
+  PUBLICATION supplies the receipt read database, canonical receipt CID,
+  expected receipt basis and the three callbacks of a trusted atomic adapter.
+  The adapter must verify the complete candidate closure and atomically publish
+  both references. Registry provenance, caller identity, basis admission,
+  policy, transaction durability and stable readback remain host obligations."
+  [options host verification {:keys [database expected-basis-cid receipt-cid-fn adapter] :as publication}]
+  (when-not (and (map? host) (= #{:backend :scope :admit-basis!} (set (keys host)))
+                 (map? publication)
+                 (= #{:database :expected-basis-cid :receipt-cid-fn :adapter} (set (keys publication)))
+                 (fn? receipt-cid-fn) (map? adapter)
+                 (= #{:publish! :read-ref! :read-nonce-ref!} (set (keys adapter)))
+                 (every? fn? (vals adapter)))
+    (reject! :invalid-publication-options))
+  (let [sink (causal/published-atomic-execution-receipt-sink
+               database (merge {:expected-basis-cid expected-basis-cid
+                                :receipt-cid-fn receipt-cid-fn} adapter))]
+    (execute-registry-bound! options (assoc host :publish! sink) verification)))
