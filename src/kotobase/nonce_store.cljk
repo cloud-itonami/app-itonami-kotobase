@@ -21,7 +21,8 @@
   changes create a different replay domain. A single-writer ref backend needs
   explicit :single-writer? true AND externally enforced writer exclusivity.
   The adapter cannot detect rollback, ref deletion or a dishonest backend. It
-  never recycles refs and offers no retention/GC protocol."
+  never recycles refs and offers no retention/GC protocol. An existing ref is
+  checked against its marker before replay is refused without a block write."
   [{:keys [backend scope single-writer?] :as options}]
   (when-not (and (map? options) (= #{:backend :scope :single-writer?} (set (keys options)))
                  (bounded-text? scope 512) (boolean? single-writer?))
@@ -38,16 +39,27 @@
           bytes (codec/encode-bounded marker (:max-bytes limits))
           cid (codec/value-cid marker)
           ref-name (str "nonce/v1/" key-cid)]
-      (then (storage/-put-blocks! backend [{:cid cid :bytes bytes}])
-            (fn [_]
-              (then (storage/-get-blocks backend [cid])
-                    (fn [blocks]
-                      (let [stored (get blocks cid)]
-                        (when-not (and stored (= marker (codec/verify-value-cid-structurally-bounded cid stored limits)))
-                          (reject! :invalid-marker)))
-                      (then (storage/-compare-and-set-ref! backend ref-name nil cid)
-                            (fn [result]
-                              (when-not (and (map? result) (boolean? (:published? result))
-                                             (= cid (:current result)))
-                                (reject! :invalid-cas-result))
-                              (true? (:published? result)))))))))))
+      (let [verify-marker! (fn []
+                             (then (storage/-get-blocks backend [cid])
+                                   (fn [blocks]
+                                     (let [stored (get blocks cid)]
+                                       (when-not (and stored (= marker (codec/verify-value-cid-structurally-bounded cid stored limits)))
+                                         (reject! :invalid-marker)))
+                                     true)))]
+        (then (storage/-read-ref backend ref-name)
+              (fn [current]
+                (if (nil? current)
+                  (then (storage/-put-blocks! backend [{:cid cid :bytes bytes}])
+                        (fn [_]
+                          (then (verify-marker!)
+                                (fn [_]
+                                  (then (storage/-compare-and-set-ref! backend ref-name nil cid)
+                                        (fn [result]
+                                          (when-not (and (map? result) (boolean? (:published? result))
+                                                         (= cid (:current result)))
+                                            (reject! :invalid-cas-result))
+                                          (true? (:published? result))))))))
+                  (do
+                    (when-not (and (map? current) (= cid (:cid current)))
+                      (reject! :invalid-nonce-ref))
+                    (then (verify-marker!) (fn [_] false))))))))))
