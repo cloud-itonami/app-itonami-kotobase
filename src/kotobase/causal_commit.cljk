@@ -121,9 +121,9 @@
          (range)
          records)))
 
-(defn- entity-at [snapshot entity-id]
+(defn- entity-at [query! entity-id]
   (then
-   (core/q snapshot [entity-id nil nil])
+   (query! [entity-id nil nil])
    (fn [rows]
      (reduce
       (fn [entity {:keys [p o]}]
@@ -133,9 +133,9 @@
       {}
       rows))))
 
-(defn- decode-record [snapshot stream receipt-id entity-id]
+(defn- decode-record [query! stream receipt-id entity-id]
   (then
-   (entity-at snapshot entity-id)
+   (entity-at query! entity-id)
    (fn [record]
      (let [index (some-> (get record index-attribute) parse-long)]
        (when-not (and (= receipt-id (get record receipt-attribute))
@@ -165,21 +165,18 @@
      :receipt/stream stream
      :receipt/records (mapv :payload decoded)}))
 
-(defn receipt-at
-  "Read and verify RECEIPT-ID from exactly COMMIT-CID.
-
-  The mutable head is never consulted. Provider bytes are reverified through
-  `core/at-cid`; malformed headers, gaps, duplicates, or cross-stream records
-  fail closed."
-  [database commit-cid receipt-id]
+(defn receipt-at-query
+  "Decode and verify a receipt through QUERY!, a trusted pattern-query port
+  already pinned to COMMIT-CID. The host must verify the commit and provider
+  bytes, apply the intended visibility, and ensure every query uses that exact
+  immutable basis. This function validates receipt structure, not signatures,
+  authorization or the truth of caller-supplied rows."
+  [query! commit-cid receipt-id]
   (when-not (and (non-empty-string? commit-cid)
-                 (non-empty-string? receipt-id))
+                 (non-empty-string? receipt-id) (ifn? query!))
     (reject! :invalid-receipt-location {}))
   (then
-   (core/at-cid database commit-cid)
-   (fn [snapshot]
-     (then
-      (entity-at snapshot receipt-id)
+   (entity-at query! receipt-id)
       (fn [header]
         (when-not (= format-version (get header format-attribute))
           (reject! :receipt-not-found-or-invalid
@@ -189,14 +186,26 @@
               expected-count (some-> (get header record-count-attribute)
                                      parse-long)]
           (then
-           (core/q snapshot [nil receipt-attribute receipt-id])
+           (query! [nil receipt-attribute receipt-id])
            (fn [record-links]
              (let [record-ids (->> record-links (map :s) sort vec)]
                (then
-                (all (mapv #(decode-record snapshot stream receipt-id %)
+                (all (mapv #(decode-record query! stream receipt-id %)
                            record-ids))
                 #(verified-receipt commit-cid receipt-id stream encoded-basis
-                                   expected-count %)))))))))))
+                                   expected-count %)))))))))
+
+(defn receipt-at
+  "Read and verify RECEIPT-ID from exactly COMMIT-CID.
+
+  The mutable head is never consulted. Provider bytes are reverified through
+  `core/at-cid`; malformed headers, gaps, duplicates, or cross-stream records
+  fail closed."
+  [database commit-cid receipt-id]
+  (when-not (and (non-empty-string? commit-cid) (non-empty-string? receipt-id))
+    (reject! :invalid-receipt-location {}))
+  (then (core/at-cid database commit-cid)
+        (fn [snapshot] (receipt-at-query #(core/q snapshot %) commit-cid receipt-id))))
 
 (defn- commit-records!
   [database stream receipt-id expected-basis records]
