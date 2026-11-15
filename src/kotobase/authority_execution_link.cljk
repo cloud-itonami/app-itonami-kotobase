@@ -1,0 +1,52 @@
+(ns kotobase.authority-execution-link
+  "Verify a signed, versioned link between a causal authority receipt and an
+  ExecutionReceipt. This verifier does not persist either record or grant access."
+  (:require [grant.causal-trust :as trust]
+            [kotobase.execution-contract :as contract]))
+
+(def format-id :kotobase.authority-execution-link/v1)
+(def link-keys #{:format :request/digest :execution-receipt/cid
+                 :authority-receipt/cid :tenant :epoch :signature})
+
+(defn- reject! [reason]
+  (throw (ex-info "authority execution link refused"
+                  {:kotobase.authority-execution-link/reason reason})))
+
+(defn verify!
+  "Recompute addresses and verify the scoped executor signature.
+
+  The host must separately authenticate the causal decision, its issuer, trust
+  evidence and the execution receipt, and provide a canonical CID function and scoped
+  verifier. A valid link attests association, not that its inputs are true.
+  Trust basis and query basis are distinct and are not equated here."
+  [{:keys [link request query execution-receipt authority-receipt value-cid verify]}]
+  (when-not (and (map? link) (= link-keys (set (keys link)))
+                 (= format-id (:format link)) (ifn? value-cid) (ifn? verify))
+    (reject! :invalid-link))
+  (contract/validate-request! request)
+  (contract/validate-receipt! execution-receipt)
+  (trust/receipt authority-receipt)
+  (let [decision (:causal.receipt/decision authority-receipt)
+        cap (:decision/runtime-capability-spec decision)]
+    (when-not (and (= :allow (:decision/status decision))
+                   (contains? #{:allow :deny} (:authority/decision execution-receipt))
+                   (= (:principal request) (:causal.receipt/principal authority-receipt)
+                      (:capability/principal cap))
+                   (= (:tenant request) (get-in query [:scope :tenant]) (:capability/tenant cap))
+                   (= (:base/commit request) (get-in query [:scope :basis]))
+                   (= :read (:operation request))
+                   (= (:capability/resource cap) (get-in query [:scope :resources]))
+                   (= :object/read (:capability/action cap))
+                   (= (:query/digest request) (value-cid query))
+                   (= (:request/digest execution-receipt) (:request/digest link) (value-cid request))
+                   (= (:execution-receipt/cid link) (value-cid execution-receipt))
+                   (= (:authority-receipt/cid link) (value-cid authority-receipt))
+                   (= (:tenant link) (:tenant request))
+                   (= (:epoch link) (:authority/epoch request)))
+      (reject! :binding-mismatch))
+    (when-not (true? (verify {:record :authority-execution-link
+                             :payload-cid (value-cid (dissoc link :signature))
+                             :signature (:signature link)
+                             :tenant (:tenant request) :epoch (:authority/epoch request)}))
+      (reject! :signature-refused))
+    true))

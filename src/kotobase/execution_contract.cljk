@@ -132,6 +132,18 @@
       (reject! :invalid-receipt {})))
   receipt)
 
+(defn validate-manifest-request!
+  "Require the request to use exactly the signed manifest's basis, policy and epoch.
+  Call before nonce consumption or evaluation, and again on complete receipts."
+  [manifest request]
+  (validate-manifest! manifest)
+  (validate-request! request)
+  (when-not (and (= (:base/commit request) (:data/commit manifest))
+                 (= (:authority/policy request) (:authority/policy manifest))
+                 (= (:authority/epoch request) (:authority/epoch manifest)))
+    (reject! :cross-record-mismatch {}))
+  true)
+
 (defn validate-execution!
   "Validate all three records and their cross-record invariants.
 
@@ -145,11 +157,9 @@
   (validate-manifest! manifest)
   (validate-request! request)
   (validate-receipt! receipt)
+  (validate-manifest-request! manifest request)
   (when-not (and (non-empty-string? manifest-cid)
                  (non-empty-string? request-digest)
-                 (= (:base/commit request) (:data/commit manifest))
-                 (= (:authority/policy request) (:authority/policy manifest))
-                 (= (:authority/epoch request) (:authority/epoch manifest))
                  (= manifest-cid (:execution/manifest receipt))
                  (= request-digest (:request/digest receipt)))
     (reject! :cross-record-mismatch {}))

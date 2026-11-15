@@ -1,0 +1,17 @@
+(ns kotobase.hosted-receipt-publication-test
+  (:require [kotoba.test :refer [deftest is]]
+            [kotobase.hosted-receipt-publication :as hosted]))
+
+#?(:clj
+   (deftest invalid-options-and-unverified-bundle-fail-before-readback
+     (is (thrown? Exception (hosted/callbacks {})))
+     (let [reads (atom 0)
+           callbacks (hosted/callbacks
+                       {:stage-bundle! (fn [& _]) :encrypt! identity
+                        :open-read-db! (fn [_] (swap! reads inc) nil)
+                        :verify-bundle! (fn [& _] false)})]
+       (is (thrown? Exception ((:build! callbacks) {} {} {})))
+       (is (= :receipt-bundle-refused
+              (try ((:verify! callbacks) identity "cid" {} {}) nil
+                   (catch Exception e (:type (ex-data e))))))
+       (is (zero? @reads)))))

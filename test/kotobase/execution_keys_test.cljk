@@ -157,6 +157,25 @@
                                                          (id/value-cid unsigned))
                                                :signature/value ""))))))))))
 
+(deftest duplicate-key-ids-are-refused-before-cryptography
+  (let [same-id (assoc issuer-key :key/material "different-key")
+        signature (toy-sign issuer-key "payload")
+        context {:record :execution-manifest :tenant "acme" :epoch 7
+                 :payload-cid "payload" :signature signature}]
+    (doseq [registered [[issuer-key same-id] [same-id issuer-key]
+                        [issuer-key issuer-key]]]
+      (let [called (atom [])
+            verify (keys/verifier {:registry (constantly registered)
+                                   :verify-with #(do (swap! called conj %) true)})]
+        (is (= :duplicate-key-id (reason #(verify context))))
+        (is (empty? @called))))
+    (testing "a unique registered key still reaches the verifier"
+      (let [called (atom [])
+            verify (keys/verifier {:registry (constantly [issuer-key])
+                                   :verify-with #(do (swap! called conj %) true)})]
+        (is (true? (verify context)))
+        (is (= 1 (count @called)))))))
+
 (deftest a-registry-that-is-wrong-is-refused-when-it-is-built
   (testing "the table's scopes are exact"
     (is (= :invalid-registry-scope

@@ -1,0 +1,78 @@
+(ns kotobase.persisted-basis
+  "Read-only composition of a trusted signed-basis verifier and saved frontier.
+
+  This does not bootstrap or advance a frontier during query admission. The
+  host verifier remains responsible for proof CID, signature, authority,
+  checkpoint, physical basis and the signed manifest/location binding."
+  (:require [kotobase.frontier-store :as frontier]
+            [kotobase.governed-execution :as governed]))
+
+(defn- reject! [reason]
+  (throw (ex-info "persisted basis refused" {:kotobase.persisted-basis/reason reason})))
+
+(defn- then [value f]
+  #?(:clj (f value)
+     :cljs (.then (js/Promise.resolve value) f)))
+
+(defn admission
+  "Return a bound-query admission function.
+
+  FETCH-ENTRY! receives {:request :manifest} and resolves the candidate signed
+  entry. VERIFY-ENTRY! receives that context plus :entry and must verify the
+  entry's CID, signature, authority, checkpoint and binding to the physical
+  basis and signed manifest; only literal true admits. Both may return a
+  Promise in CLJS. This function itself checks the persisted frontier's root,
+  database, epoch and policy against the entry and request, and rereads the
+  frontier after verification. This detects a changed frontier during that
+  interval, not a change after admission; no transaction or lock is implied.
+  Backing-store rollback, untrusted callbacks and proof-fetch allocation are
+  outside scope."
+  [{:keys [backend ref-name database-id fetch-entry! verify-entry!] :as config}]
+  (when-not (and (map? config)
+                 (= #{:backend :ref-name :database-id :fetch-entry! :verify-entry!}
+                    (set (keys config)))
+                 (string? ref-name) (seq ref-name)
+                 (string? database-id) (seq database-id)
+                 (fn? fetch-entry!) (fn? verify-entry!))
+    (reject! :invalid-config))
+  (fn [{:keys [request manifest] :as context}]
+    (when-not (and (map? request) (map? manifest)
+                   (string? (:base/commit request)) (seq (:base/commit request))
+                   (string? (:authority/policy request)) (seq (:authority/policy request))
+                   (= (:base/commit request) (:data/commit manifest))
+                   (= (:authority/policy request) (:authority/policy manifest)))
+      (reject! :request-manifest-mismatch))
+    (then (fetch-entry! context)
+          (fn [entry]
+            (let [commit (:commit entry)]
+              (when-not (and (map? entry) (map? commit)
+                             (string? (:root entry)) (seq (:root entry))
+                             (= database-id (:database-id commit))
+                             (= (:authority/policy request) (:admission-policy-root commit)))
+                (reject! :entry-mismatch))
+              (then (frontier/read-frontier backend ref-name database-id)
+                    (fn [saved]
+                      (when-not saved (reject! :missing-frontier))
+                      (when-not (and (= (:root entry) (get-in saved [:frontier :logical-commit-root]))
+                                     (= (:epoch commit) (get-in saved [:frontier :epoch])))
+                        (reject! :frontier-mismatch))
+                      (then (verify-entry! (assoc context :entry entry))
+                            (fn [verified?]
+                              (when-not (true? verified?) (reject! :unverified-entry))
+                              ;; Verification may perform I/O; do not admit if the
+                              ;; frontier advanced while that work was in flight.
+                              (then (frontier/read-frontier backend ref-name database-id)
+                                    (fn [current]
+                                      (when-not (= saved current) (reject! :frontier-changed))
+                                      true)))))))))))
+
+(defn execute!
+  "Run a governed read only after read-only persisted-basis admission."
+  [options config]
+  (governed/execute-bound! options (admission config)))
+
+#?(:cljs
+   (defn execute-async!
+     "Promise-aware governed read after persisted-basis admission."
+     [options config]
+     (governed/execute-bound-async! options (admission config))))

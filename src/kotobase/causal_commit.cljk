@@ -16,6 +16,7 @@
             [grant.causal-trust :as trust]
             [identity.adapters.ledger :as identity-ledger]
             [kotobase.core :as core]
+            [kotobase.authority-execution-link :as link]
             [kotobase.execution-contract :as contract]))
 
 (def format-version "kotobase.causal-record.v1")
@@ -120,9 +121,9 @@
          (range)
          records)))
 
-(defn- entity-at [snapshot entity-id]
+(defn- entity-at [query! entity-id]
   (then
-   (core/q snapshot [entity-id nil nil])
+   (query! [entity-id nil nil])
    (fn [rows]
      (reduce
       (fn [entity {:keys [p o]}]
@@ -132,9 +133,9 @@
       {}
       rows))))
 
-(defn- decode-record [snapshot stream receipt-id entity-id]
+(defn- decode-record [query! stream receipt-id entity-id]
   (then
-   (entity-at snapshot entity-id)
+   (entity-at query! entity-id)
    (fn [record]
      (let [index (some-> (get record index-attribute) parse-long)]
        (when-not (and (= receipt-id (get record receipt-attribute))
@@ -164,21 +165,18 @@
      :receipt/stream stream
      :receipt/records (mapv :payload decoded)}))
 
-(defn receipt-at
-  "Read and verify RECEIPT-ID from exactly COMMIT-CID.
-
-  The mutable head is never consulted. Provider bytes are reverified through
-  `core/at-cid`; malformed headers, gaps, duplicates, or cross-stream records
-  fail closed."
-  [database commit-cid receipt-id]
+(defn receipt-at-query
+  "Decode and verify a receipt through QUERY!, a trusted pattern-query port
+  already pinned to COMMIT-CID. The host must verify the commit and provider
+  bytes, apply the intended visibility, and ensure every query uses that exact
+  immutable basis. This function validates receipt structure, not signatures,
+  authorization or the truth of caller-supplied rows."
+  [query! commit-cid receipt-id]
   (when-not (and (non-empty-string? commit-cid)
-                 (non-empty-string? receipt-id))
+                 (non-empty-string? receipt-id) (ifn? query!))
     (reject! :invalid-receipt-location {}))
   (then
-   (core/at-cid database commit-cid)
-   (fn [snapshot]
-     (then
-      (entity-at snapshot receipt-id)
+   (entity-at query! receipt-id)
       (fn [header]
         (when-not (= format-version (get header format-attribute))
           (reject! :receipt-not-found-or-invalid
@@ -188,14 +186,26 @@
               expected-count (some-> (get header record-count-attribute)
                                      parse-long)]
           (then
-           (core/q snapshot [nil receipt-attribute receipt-id])
+           (query! [nil receipt-attribute receipt-id])
            (fn [record-links]
              (let [record-ids (->> record-links (map :s) sort vec)]
                (then
-                (all (mapv #(decode-record snapshot stream receipt-id %)
+                (all (mapv #(decode-record query! stream receipt-id %)
                            record-ids))
                 #(verified-receipt commit-cid receipt-id stream encoded-basis
-                                   expected-count %)))))))))))
+                                   expected-count %)))))))))
+
+(defn receipt-at
+  "Read and verify RECEIPT-ID from exactly COMMIT-CID.
+
+  The mutable head is never consulted. Provider bytes are reverified through
+  `core/at-cid`; malformed headers, gaps, duplicates, or cross-stream records
+  fail closed."
+  [database commit-cid receipt-id]
+  (when-not (and (non-empty-string? commit-cid) (non-empty-string? receipt-id))
+    (reject! :invalid-receipt-location {}))
+  (then (core/at-cid database commit-cid)
+        (fn [snapshot] (receipt-at-query #(core/q snapshot %) commit-cid receipt-id))))
 
 (defn- commit-records!
   [database stream receipt-id expected-basis records]
@@ -261,6 +271,57 @@
                      (:causal.receipt/id receipt)
                      expected-basis [receipt])))
 
+#?(:clj
+   (defn decision-receipt-authenticator
+     "Authenticate a host-verified decision commit and read back its exact receipt.
+
+     VERIFY-COMMIT! must authenticate the commit CID and context against an
+     independently trusted issuer, keys, revocation and policy. This adapter
+     only checks its literal true answer and verifies the named decision record
+     at the exact immutable commit; it does not establish freshness or prevent
+     rollback of host trust state. The adapter is synchronous and JVM-only."
+     [database {:keys [commit-cid verify-commit!] :as options}]
+     (when-not (and (= #{:commit-cid :verify-commit!} (set (keys options)))
+                    (non-empty-string? commit-cid) (ifn? verify-commit!))
+       (reject! :invalid-decision-authenticator {}))
+     (fn [{:keys [authority-receipt request query] :as context}]
+       (when-not (= #{:authority-receipt :request :query} (set (keys context)))
+         (reject! :invalid-authority-context {}))
+       (trust/receipt authority-receipt)
+       (when-not (true? (verify-commit! (assoc context :commit-cid commit-cid)))
+         (reject! :decision-commit-refused {}))
+       (let [proof (receipt-at database commit-cid (:causal.receipt/id authority-receipt))]
+         (when-not (= {:receipt/id (:causal.receipt/id authority-receipt)
+                       :receipt/commit-cid commit-cid
+                       :receipt/basis-cid (:causal.receipt/basis-cid authority-receipt)
+                       :receipt/stream decision-stream :receipt/records [authority-receipt]}
+                      proof)
+           (reject! :decision-receipt-mismatch {}))
+         true))))
+
+(defn- execution-sink-options! [{:keys [expected-basis-cid receipt-cid-fn] :as options}]
+  (when-not (and (map? options) (= #{:expected-basis-cid :receipt-cid-fn} (set (keys options))))
+    (reject! :invalid-execution-sink-options {}))
+  (when-not (ifn? receipt-cid-fn)
+    (reject! :missing-receipt-cid-function {}))
+  (when-not (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+    (reject! :invalid-expected-basis {}))
+  options)
+
+(defn prepare-execution-receipt
+  "Validate and prepare canonical transaction data; does not write or attest durability.
+
+  The caller owns the provisional block ports and must publish and read back
+  the resulting commit before creating any durable receipt acknowledgement."
+  [receipt {:keys [expected-basis-cid receipt-cid-fn] :as options}]
+  (execution-sink-options! options)
+  (contract/validate-receipt! receipt)
+  (let [receipt-id (receipt-cid-fn receipt)]
+    (when-not (non-empty-string? receipt-id)
+      (reject! :invalid-receipt-cid {}))
+    {:receipt/cid receipt-id :receipt/basis-cid expected-basis-cid
+     :tx-data (transaction-data execution-stream receipt-id expected-basis-cid [receipt])}))
+
 (defn execution-receipt-sink
   "Build the `:commit!` that `kotobase.governed-execution` requires.
 
@@ -275,12 +336,7 @@
   `receipt-cid-fn` is the host's canonical codec. This namespace does not hash
   a printed representation to name a receipt."
   [database {:keys [expected-basis-cid receipt-cid-fn] :as options}]
-  (when-not (= #{:expected-basis-cid :receipt-cid-fn} (set (keys options)))
-    (reject! :invalid-execution-sink-options {}))
-  (when-not (ifn? receipt-cid-fn)
-    (reject! :missing-receipt-cid-function {}))
-  (when-not (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
-    (reject! :invalid-expected-basis {}))
+  (execution-sink-options! options)
   (fn [receipt]
     (contract/validate-receipt! receipt)
     (let [receipt-id (receipt-cid-fn receipt)]
@@ -288,3 +344,154 @@
         (reject! :invalid-receipt-cid {}))
       (commit-records! database execution-stream receipt-id
                        expected-basis-cid [receipt]))))
+
+(defn published-execution-receipt-sink
+  "Build a receipt sink for an explicit host publication transaction.
+
+  PUBLISH! receives the validated receipt and prepared transaction data. It
+  must persist and semantically verify the complete commit before atomically
+  publishing its ref, then return the commit CID. READ-REF! independently
+  reads that ref. The host owns both callbacks and their storage guarantees;
+  this adapter rechecks the published ref and exact immutable receipt before
+  returning an acknowledgement. It does not make nonce consumption and
+  receipt publication one transaction, or establish anti-rollback."
+  [database {:keys [expected-basis-cid receipt-cid-fn publish! read-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :receipt-cid-fn :publish! :read-ref!}
+                    (set (keys options)))
+                 (ifn? publish!) (ifn? read-ref!))
+    (reject! :invalid-publication-sink-options {}))
+  (let [prepare-options {:expected-basis-cid expected-basis-cid
+                         :receipt-cid-fn receipt-cid-fn}]
+    (execution-sink-options! prepare-options)
+    (fn [receipt]
+      (let [prepared (prepare-execution-receipt receipt prepare-options)
+            receipt-id (:receipt/cid prepared)]
+        (then (publish! {:receipt receipt :prepared prepared})
+          (fn [commit-cid]
+            (when-not (non-empty-string? commit-cid)
+              (reject! :invalid-published-commit {}))
+            (then (read-ref!)
+              (fn [ref-cid]
+                (when-not (= commit-cid ref-cid)
+                  (reject! :published-ref-mismatch {}))
+                (then (receipt-at database commit-cid receipt-id)
+                  (fn [proof]
+                    (when-not (= {:receipt/basis-cid expected-basis-cid
+                                  :receipt/stream execution-stream
+                                  :receipt/records [receipt]}
+                                 (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
+                      (reject! :write-proof-mismatch {}))
+                    {:receipt/durable? true :receipt/cid receipt-id
+                     :receipt/commit-cid commit-cid :receipt/basis-cid expected-basis-cid
+                     :receipt/record-count 1 :receipt/route :published-canonical-cid-dag}))))))))))
+
+
+(defn published-atomic-execution-receipt-sink
+  "Build a two-argument `(fn [receipt prepared-nonce] ack)` for a trusted
+  atomic publisher. PUBLISH! receives {:receipt :prepared :nonce}, and must
+  bind and verify the nonce semantics while atomically committing its absent
+  ref with the receipt closure. The host authenticates the request and owns
+  the stable replay domain. This sink checks receipt ref and exact immutable
+  receipt through the existing published sink, then checks the nonce ref
+  before returning its durable acknowledgement. Readback does not itself
+  establish atomicity, prevent rollback or authenticate the publisher."
+  [database {:keys [expected-basis-cid receipt-cid-fn publish! read-ref! read-nonce-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :receipt-cid-fn :publish! :read-ref! :read-nonce-ref!}
+                    (set (keys options)))
+                 (ifn? publish!) (ifn? read-ref!) (ifn? read-nonce-ref!))
+    (reject! :invalid-publication-sink-options {}))
+  (let [prepare-options {:expected-basis-cid expected-basis-cid
+                         :receipt-cid-fn receipt-cid-fn}]
+    (execution-sink-options! prepare-options)
+    (fn [receipt prepared-nonce]
+      (when-not (and (map? prepared-nonce)
+                     (= #{:ref-name :marker-cid :marker :bytes} (set (keys prepared-nonce)))
+                     (non-empty-string? (:ref-name prepared-nonce))
+                     (non-empty-string? (:marker-cid prepared-nonce))
+                     (map? (:marker prepared-nonce)) (some? (:bytes prepared-nonce)))
+        (reject! :invalid-prepared-nonce {}))
+      (let [sink (published-execution-receipt-sink
+                   database (assoc prepare-options :read-ref! read-ref!
+                              :publish! (fn [input]
+                                          (publish! (assoc input :nonce prepared-nonce)))))]
+        (then (sink receipt)
+          (fn [ack]
+            (then (read-nonce-ref! (:ref-name prepared-nonce))
+              (fn [ref]
+                (when-not (and (map? ref) (= (:marker-cid prepared-nonce) (:cid ref)))
+                  (reject! :published-nonce-ref-mismatch {}))
+                ack))))))))
+
+(defn- linked-records!
+  [receipt {:keys [value-cid request query authority-receipt verify-authority! sign verify]}]
+  (contract/validate-receipt! receipt)
+  (when-not (true? (verify-authority! {:authority-receipt authority-receipt
+                                      :request request :query query}))
+    (reject! :authority-receipt-refused {}))
+  (let [receipt-id (value-cid receipt)
+        unsigned {:format link/format-id :request/digest (value-cid request)
+                  :execution-receipt/cid receipt-id
+                  :authority-receipt/cid (value-cid authority-receipt)
+                  :tenant (:tenant request) :epoch (:authority/epoch request)}
+        signed (assoc unsigned :signature (sign unsigned))]
+    (link/verify! {:link signed :request request :query query
+                   :execution-receipt receipt :authority-receipt authority-receipt
+                   :value-cid value-cid :verify verify})
+    [receipt authority-receipt signed]))
+
+(defn linked-execution-receipt-sink
+  "Build an opt-in sink that commits a signed authority link with its records.
+
+  The host must authenticate the supplied authority receipt and its evidence
+  through verify-authority!. A literal true is required. Sign and verify are
+  synchronous and scoped by the caller; the execution receipt itself must
+  already have been authenticated by the execution path. One canonical commit
+  contains all three records and is read back before acknowledgement. This does
+  not advance a mutable head or claim cross-store or distributed atomicity."
+  [database {:keys [expected-basis-cid value-cid request query authority-receipt
+                    verify-authority! sign verify] :as options}]
+  (when-not (and (= #{:expected-basis-cid :value-cid :request :query :authority-receipt
+                      :verify-authority! :sign :verify} (set (keys options)))
+                 (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+                 (every? ifn? [value-cid verify-authority! sign verify]))
+    (reject! :invalid-linked-sink-options {}))
+  (fn [receipt]
+    (commit-records! database execution-stream (value-cid receipt) expected-basis-cid
+                     (linked-records! receipt options))))
+
+(defn published-linked-execution-receipt-sink
+  "Publish and read back a linked receipt through an explicit host transaction.
+
+  The host must verify the persisted bundle before its ref CAS. Nonce and ref
+  publication remain separate transactions; host trust and fencing are required."
+  [database {:keys [expected-basis-cid value-cid publish! read-ref!] :as options}]
+  (when-not (and (map? options)
+                 (= #{:expected-basis-cid :value-cid :request :query :authority-receipt
+                      :verify-authority! :sign :verify :publish! :read-ref!} (set (keys options)))
+                 (or (nil? expected-basis-cid) (non-empty-string? expected-basis-cid))
+                 (every? ifn? ((juxt :value-cid :verify-authority! :sign :verify :publish! :read-ref!) options)))
+    (reject! :invalid-linked-sink-options {}))
+  (fn [receipt]
+    (let [records (linked-records! receipt options)
+          receipt-id (value-cid receipt)
+          _ (when-not (non-empty-string? receipt-id) (reject! :invalid-receipt-cid {}))
+          prepared {:receipt/cid receipt-id :receipt/basis-cid expected-basis-cid
+                    :receipt/records records
+                    :tx-data (transaction-data execution-stream receipt-id expected-basis-cid records)}]
+      (then (publish! {:receipt receipt :prepared prepared})
+        (fn [commit-cid]
+          (when-not (non-empty-string? commit-cid) (reject! :invalid-published-commit {}))
+          (then (read-ref!)
+            (fn [ref-cid]
+              (when-not (= commit-cid ref-cid) (reject! :published-ref-mismatch {}))
+              (then (receipt-at database commit-cid receipt-id)
+                (fn [proof]
+                  (when-not (= {:receipt/basis-cid expected-basis-cid
+                                :receipt/stream execution-stream :receipt/records records}
+                               (select-keys proof [:receipt/basis-cid :receipt/stream :receipt/records]))
+                    (reject! :write-proof-mismatch {}))
+                  {:receipt/durable? true :receipt/cid receipt-id :receipt/commit-cid commit-cid
+                   :receipt/basis-cid expected-basis-cid :receipt/record-count 3
+                   :receipt/route :published-canonical-cid-dag})))))))))

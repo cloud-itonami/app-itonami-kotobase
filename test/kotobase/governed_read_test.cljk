@@ -13,6 +13,8 @@
             [kotobase.core :as core]
             [kotobase.evidence :as evidence]
             [kotobase.execution-identity :as id]
+            [kotobase.engine.identity :as engine-id]
+            [kotobase.frontier-store :as frontier]
             [kotobase.governed-execution-test :as contract-fixture]
             [kotobase.governed-read :as governed-read]
             [kotobase.storage.memory :as memory]))
@@ -101,6 +103,38 @@
     (testing "and no mutable head was published to find it by"
       (is (nil? (core/head db))))))
 
+#?(:clj
+   (deftest publication-route-verifies-ref-and-receipt-before-returning-rows
+     (let [backend (memory/memory-store)
+           db (database backend)
+           basis (seed! db)
+           ref (atom nil)
+           calls (atom 0)
+           publish! (fn [{:keys [prepared]}]
+                      (swap! calls inc)
+                      (let [cid (core/commit-at! db (:receipt/basis-cid prepared) (:tx-data prepared))]
+                        (reset! ref cid)
+                        cid))
+           make-request (fn [read-ref!]
+                          (assoc-in (request-at db basis (atom false))
+                                    [:commit :publication]
+                                    {:publish! publish! :read-ref! read-ref!}))
+           result (governed-read/read! (make-request #(deref ref)))
+           commit-cid (get-in result [:provenance :receipt-commit-cid])]
+       (is (= served (:rows result)))
+       (is (= commit-cid @ref))
+       (is (= [(:execution/receipt result)]
+              (:receipt/records (causal/receipt-at db commit-cid "bafy-execution-receipt"))))
+       (is (= 1 @calls))
+       (is (some? (try (governed-read/read! (make-request (constantly "stale"))) nil
+                       (catch kerror/ExceptionInfo e e))))
+       (is (= 2 @calls))
+       (let [request (assoc-in (request-at db basis (atom false))
+                               [:commit :publication]
+                               {:publish! (fn [_] basis) :read-ref! (constantly basis)})]
+         (is (some? (try (governed-read/read! request) nil
+                         (catch kerror/ExceptionInfo e e))))))))
+
 (deftest the-retired-paths-checks-are-still-made
   (let [db (database (memory/memory-store))
         basis (seed! db)]
@@ -179,3 +213,80 @@
                (reason #(governed-read/read! (dissoc request k))))
             (str "removing " k " should refuse the read"))))
     (is (false? @evaluated))))
+
+(deftest bound-read-gates-the-canonical-receipt-path
+  (let [backend (memory/memory-store)
+        db (database backend)
+        basis (seed! db)
+        entry {:root "fixture-root"
+               :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
+                        :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
+                        :schema-root "schema" :model-contract-root "model"
+                        :admission-policy-root "bafy-policy"}}
+        _ (frontier/accept-and-store! backend "frontier" "db"
+            {:allow-initialize? true :candidate-root (:root entry) :path [entry]
+             :verify-entry (constantly true)})
+        checked (atom []) evaluated (atom false)
+        config {:backend backend :ref-name "frontier" :database-id "db"
+                :fetch-entry! (fn [_] (swap! checked conj :fetch) entry)
+                :verify-entry! (fn [_] (swap! checked conj :verify) true)}
+        req (request-at db basis evaluated)
+        result (governed-read/read-bound! req config)
+        proof (causal/receipt-at db (get-in result [:provenance :receipt-commit-cid])
+                                 "bafy-execution-receipt")]
+    (is (= [:fetch :verify] @checked))
+    (is (= served (:rows result)))
+    (is (= [(:execution/receipt result)] (:receipt/records proof)))
+    (let [events (atom []) rejected (atom false)
+          req (request-at db basis rejected
+                :authority (assoc (:authority (request-at db basis rejected))
+                                  :consume-nonce! (fn [_] (swap! events conj :nonce) true)))
+          config (assoc config :verify-entry! (fn [_] (swap! events conj :verify) false))]
+      (is (some? (try (governed-read/read-bound! req config) nil
+                      (catch kerror/ExceptionInfo e e))))
+      (is (= [:verify] @events))
+      (is (false? @rejected)))))
+
+(deftest persistent-read-consumes-a-scoped-nonce
+  (let [backend (memory/memory-store) db (database backend) basis (seed! db)
+        entry {:root "fixture-root"
+               :commit {:format engine-id/logical-commit-format :database-id "db" :epoch 1
+                        :parents [] :tx-root "tx" :logical-checkpoint-root "checkpoint"
+                        :schema-root "schema" :model-contract-root "model"
+                        :admission-policy-root "bafy-policy"}}
+        _ (frontier/accept-and-store! backend "frontier" "db"
+            {:allow-initialize? true :candidate-root (:root entry) :path [entry]
+             :verify-entry (constantly true)})
+        evaluated (atom 0) external (atom 0)
+        request (request-at db basis (atom false)
+                  :evaluate! (fn [_ _] (swap! evaluated inc) served)
+                  :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                              :consume-nonce! (fn [_] (swap! external inc) true)})
+        config {:backend backend :ref-name "frontier" :database-id "db"
+                :fetch-entry! (constantly entry) :verify-entry! (constantly true)}
+        nonce-config {:backend backend :single-writer? false}
+        before (memory/snapshot backend)]
+    (is (some? (try (governed-read/read-persistent! request (assoc config :verify-entry! (constantly false)) nonce-config)
+                    nil (catch kerror/ExceptionInfo e e))))
+    (is (= before (memory/snapshot backend)))
+    (is (= served (:rows (governed-read/read-persistent! request config nonce-config))))
+    (is (= :nonce-replayed (reason #(governed-read/read-persistent! request config nonce-config))))
+    (is (= 1 @evaluated))
+    (is (zero? @external))
+    (is (= :invalid-nonce-config
+           (reason #(governed-read/read-persistent! request config (assoc nonce-config :scope "caller-selected")))))))
+
+(deftest registry-persistent-read-refuses-a-caller-verifier-override
+  (let [called (atom false)
+        config {:backend nil :ref-name "frontier" :database-id "db"
+                :fetch-entry! (fn [_] (reset! called true))
+                :verify-entry! (constantly true)}]
+    (is (= :invalid-registry-basis-config
+           (reason #(governed-read/read-registry-persistent! {} config {} {}))))
+    (is (false? @called))
+    (let [basis (dissoc config :verify-entry!)
+          failure (try (governed-read/read-registry-persistent!
+                        {} basis {:verify-signature! (constantly true)} {})
+                       nil (catch kerror/ExceptionInfo e (ex-data e)))]
+      (is (= :invalid-config (:kotobase.signed-basis-keys/reason failure)))
+      (is (false? @called)))))

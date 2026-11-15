@@ -1,0 +1,31 @@
+;; Hosted control against an existing separately published fixture; no writer is used.
+(require '[clojure.string :as str] '[kotobase.governed-atomic :as atomic]
+         '[kotobase.nonce-store :as nonce])
+(import '[java.security MessageDigest] '[java.util HexFormat])
+(def path (or (System/getenv "GIB_GOVERNED_PROBE") (throw (ex-info "probe required" {}))))
+(def raw (java.nio.file.Files/readAllBytes (java.nio.file.Paths/get path (make-array String 0))))
+(assert (= "b396c68621caf109c500bdb307e216b082b70e170475f1b20f048975ae220896"
+           (.formatHex (HexFormat/of) (.digest (MessageDigest/getInstance "SHA-256") raw))))
+(def original (first (str/split (String. raw "UTF-8") #"\(case \(first \*command-line-args\*\)" 2)))
+(def old "(def basis-cid (:cid (storage/-read-ref (refs/open-ref-store (str out \"/store\")) \"gib-prolly\")))")
+(def new "(def basis-cid (:basis (edn/read-string (slurp (str receipt-out \"/ids.edn\")))))")
+(assert (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote old)) original))))
+(load-string (str/replace original old new))
+(let [db (rbackend) ids (edn/read-string (slurp (str receipt-out "/ids.edn")))
+      commit (:cid (storage/-read-ref db "allow")) rid (:allow ids)
+      scoped (fb/open-bound-block-store (str receipt-out "/store") "allow")
+      get-block #(storage/get-block scoped %)
+      snapshot (peer/hydrate-chain get-block commit pr-str identity)
+      query! #(peer/q snapshot % (constantly true))
+      legacy (causal/receipt-at (open-db db) commit rid)
+      scoped-proof (causal/receipt-at-query query! commit rid)
+      reason (fn [f] (try (f) nil (catch Exception e (:kotobase.causal-commit/reason (ex-data e)))))
+      header-pattern [rid nil nil]
+      records-pattern [nil "kotobase.causal/receipt" rid]]
+ (assert (= legacy scoped-proof))
+ (assert (= :receipt-not-found-or-invalid (reason #(causal/receipt-at-query (constantly []) commit rid))))
+ (assert (= :duplicate-attribute (reason #(causal/receipt-at-query (fn [pattern] (let [rows (query! pattern)] (if (= pattern header-pattern) (conj (vec rows) (first rows)) rows))) commit rid))))
+ (assert (= :incomplete-or-reordered-records (reason #(causal/receipt-at-query (fn [pattern] (if (= pattern records-pattern) [] (query! pattern))) commit rid))))
+ (assert (try (peer/hydrate-chain get-block "bafkreigp5rn4uqshssw3l36zq7mbvs47omqaqjsd3vl7bcd6wldn2uumlq" pr-str identity) false (catch Exception _ true)))
+ (prn {:bound-receipt :matches-legacy :empty-header :refused :duplicate-attribute :refused :missing-records :refused :wrong-commit :refused :pass true}))
+(shutdown-agents)

@@ -203,6 +203,23 @@
       ;; evaluation, so nothing here reached the evaluator
       (is (= [] (steps journal))))))
 
+(deftest signed-manifest-must-match-before-any-read-or-nonce
+  (doseq [[field value] [[:data/commit "bafy-other"]
+                         [:authority/policy "bafy-other-policy"]
+                         [:authority/epoch 8]]]
+    (let [journal (atom []) calls (atom [])
+          signed (resigned (assoc manifest field value))
+          error (try
+                  (governed/execute!
+                   (options journal :manifest signed
+                            :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                        :consume-nonce! (fn [_] (swap! calls conj :nonce) true)}
+                            :authorize! (fn [q] (swap! calls conj :authorize) (authorize q))))
+                  nil (catch kerror/ExceptionInfo e e))]
+      (is (= :cross-record-mismatch (:kotobase.execution-contract/reason (ex-data error))))
+      (is (= [] @calls) "a mismatched signed manifest spends no nonce and invokes no policy")
+      (is (= [] (steps journal)) "a mismatched signed manifest does not evaluate or commit"))))
+
 (deftest expiry-is-decided-against-the-clock-not-against-the-field-existing
   (let [journal (atom [])
         ledger (nonce-ledger)]
@@ -330,6 +347,11 @@
   ;; the plumbing did — and writing the second one into the evidence plane as
   ;; `:deny` records a decision policy never made
   (let [journal (atom [])]
+    (testing "an evaluator returning more than the admitted limit"
+      (is (= :result-limit-exceeded
+             (reason #(governed/execute!
+                       (options journal :evaluate! (fn [_ _] (vec (range 21))))))))
+      (is (= [] (committed journal))))
     (testing "a result that is not a vector"
       (is (= :invalid-result
              (reason #(governed/execute!
@@ -420,3 +442,28 @@
       (is (= :missing-host-function
              (reason #(governed/execute! (assoc opts :verify nil))))))
     (is (= [] @journal))))
+
+(deftest bound-execution-requires-admission-before-side-effects
+  (let [events (atom [])
+        opts (options events :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                         :consume-nonce! (fn [_] (swap! events conj [:nonce]) true)})
+        admit (fn [context]
+                (is (= request (:request context)))
+                (is (= manifest (:manifest context)))
+                (swap! events conj [:basis]) true)]
+    (is (= served (:rows (governed/execute-bound! opts admit))))
+    (is (= [:basis :nonce :evaluate :commit] (steps events))))
+  (doseq [answer [false nil :truthy]]
+    (let [events (atom [])
+          opts (options events :authority {:now "2026-09-02T14:30:00Z" :epoch 7
+                                          :consume-nonce! (fn [_] (swap! events conj [:nonce]) true)})]
+      (is (= :basis-admission-refused
+             (reason #(governed/execute-bound! opts (fn [_] (swap! events conj [:basis]) answer)))))
+      (is (= [:basis] (steps events)))))
+  (let [events (atom [])]
+    (is (= :missing-basis-verifier (reason #(governed/execute-bound! (options events) nil))))
+    (is (empty? @events)))
+  (let [events (atom []) opts (options events :manifest (assoc manifest :signature "bad"))]
+    (is (= :signature-not-verified
+           (reason #(governed/execute-bound! opts (fn [_] (swap! events conj [:basis]) true)))))
+    (is (empty? @events))))

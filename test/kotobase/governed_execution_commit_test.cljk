@@ -104,3 +104,23 @@
              (reason #(causal/execution-receipt-sink
                        db {:expected-basis-cid nil
                            :receipt-cid-fn nil})))))))
+
+(deftest preparation-is-not-a-durability-acknowledgement
+  (let [backend (memory/memory-store)
+        db (core/open {:storage backend :encrypt-fn identity :decrypt-fn identity
+                       :blind-fn pr-str :visible? (constantly true)})
+        result (governed/execute! (fixture/options (atom [])))
+        receipt (:execution/receipt result)
+        before (memory/snapshot backend)
+        opts {:expected-basis-cid nil :receipt-cid-fn (constantly "bafy-prepared")}
+        prepared (causal/prepare-execution-receipt receipt opts)]
+    (is (= #{:receipt/cid :receipt/basis-cid :tx-data} (set (keys prepared))))
+    (is (not (contains? prepared :receipt/durable?)))
+    (is (= before (memory/snapshot backend)))
+    (let [commit (core/commit-at! db nil (:tx-data prepared))
+          proof (causal/receipt-at db commit (:receipt/cid prepared))]
+      (is (= [receipt] (:receipt/records proof)))
+      (is (= causal/execution-stream (:receipt/stream proof))))
+    (is (= :invalid-keys (reason #(causal/prepare-execution-receipt (dissoc receipt :signature) opts))))
+    (is (= :invalid-receipt-cid
+           (reason #(causal/prepare-execution-receipt receipt (assoc opts :receipt-cid-fn (constantly ""))))))))

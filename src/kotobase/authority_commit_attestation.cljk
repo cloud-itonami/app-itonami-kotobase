@@ -1,0 +1,51 @@
+(ns kotobase.authority-commit-attestation
+  "Scoped issuer verification for a signed causal authority commit."
+  (:require [kotobase.execution-contract :as contract]
+            [kotobase.execution-identity :as identity]
+            [kotobase.execution-keys :as keys]))
+
+(def format-id :kotobase.authority-commit-attestation/v1)
+(def attestation-keys #{:format :commit-cid :issuer :tenant :epoch :signature})
+
+(defn- reject! [reason]
+  (throw (ex-info "authority commit attestation refused"
+                  {:kotobase.authority-commit-attestation/reason reason})))
+
+(defn verifier
+  "Build a synchronous host callback for decision-receipt-authenticator.
+
+  The attestation is domain-separated and addresses an exact commit under a
+  tenant and epoch. REGISTRY, issuer authorization and crypto remain trusted
+  host inputs; the callback does not establish time freshness, revocation or
+  a rollback-resistant current commit. It does not verify the decision record:
+  decision-receipt-authenticator performs that exact commit readback."
+  [{:keys [attestation registry algorithm issuer-authorized? verify-with] :as config}]
+  (when-not (and (map? config)
+                 (= #{:attestation :registry :algorithm :issuer-authorized? :verify-with} (set (keys config)))
+                 (map? attestation) (= attestation-keys (set (keys attestation)))
+                 (= format-id (:format attestation))
+                 (string? (:commit-cid attestation)) (seq (:commit-cid attestation))
+                 (string? (:issuer attestation)) (seq (:issuer attestation))
+                 (string? (:tenant attestation)) (seq (:tenant attestation))
+                 (nat-int? (:epoch attestation)) (keyword? algorithm)
+                 (ifn? registry) (ifn? issuer-authorized?) (ifn? verify-with))
+    (reject! :invalid-config))
+  (fn [{:keys [commit-cid request] :as context}]
+    (when-not (and (map? context)
+                   (= #{:commit-cid :request :query :authority-receipt} (set (keys context))))
+      (reject! :invalid-context))
+    (contract/validate-request! request)
+    (when-not (and (= commit-cid (:commit-cid attestation))
+                   (= (:tenant request) (:tenant attestation))
+                   (= (:authority/epoch request) (:epoch attestation))
+                   (= algorithm (get-in attestation [:signature :key/algorithm])))
+      (reject! :scope-mismatch))
+    (let [key (keys/authorized-key registry
+                 {:record :authority-decision-commit :tenant (:tenant request)
+                  :epoch (:authority/epoch request)} (:signature attestation))]
+      (when-not (true? (issuer-authorized? {:issuer (:issuer attestation)
+                                           :tenant (:tenant request)
+                                           :epoch (:authority/epoch request) :key key}))
+        (reject! :issuer-not-authorized))
+      (true? (verify-with {:key key :payload-cid (identity/payload-cid attestation)
+                           :signature-value (get-in attestation [:signature :signature/value])})))))

@@ -1,0 +1,7 @@
+# Fixture receipt discovery from the published ref, 2026-11-15
+
+Using the host store left by `LINKED-GOVERNED-FOREST-POSTCAS-KILL-20261115.md`, a separate JVM ignored the test marker and IDs file. It loaded the published `linked-governed` ref, queried the exact commit for causal receipt headers, required exactly one candidate, and read its three records. The link verified against the original fixture request and the attachments were read back. Replacing the request nonce or refusing the signature caused rejection.
+
+Local macOS ARM, OpenJDK 21.0.1 / Clojure 1.12.5; Kotobase source `945bda27aeea5ab784708836e86b3dfaa3c7784f`; Otehon source, dependencies, Forest tool and fixture environment are as in the previous evidence. Probe SHA-256 `67fca02e14b363aebbab56efebc4baa71ee74fdbfd08d0f572a74b9abc941cc9`. No downloads. It produced `:marker :unused`, `:receipt-discovery :unique`, `:wrong-request :rejected`, `:bad-signature :rejected`, and `:pass true`.
+
+This is a read-only, single-receipt genesis fixture, not a product recovery API. A later commit may contain multiple headers; unbounded scanning, request lookup, replay semantics, authentication of the principal, authority receipt and execution receipt, authorization to disclose recovered rows, stale or advanced refs, concurrency and fencing remain unresolved. The link verifier does not independently authenticate its input receipts. The probe does not make nonce consumption and publication atomic, and does not prove OS reboot, Native or production trust.

@@ -1,0 +1,15 @@
+# Governed query result limit, 2026-11-14
+
+`authorized-query` now requires the evaluator's vector to contain no more than the admitted query limit before invoking the receipt sink or returning rows. This applies to the synchronous and Promise entry points. It fails rather than truncating, so no receipt can claim a different result from what was served. This is a post-evaluation output check, not a bound on the evaluator's work, intermediate rows, bytes, or memory; the host still needs resource controls.
+
+On macOS ARM OpenJDK 21.0.1 / Clojure 1.12.5, the hosted JVM reference suite (`authorized-query`, `governed-host`, `governed-execution`, `governed-read`, `execution-keys`) passed 40 tests / 240 assertions. It includes exact limit, limit+1, zero receipt sink calls for the latter, and a governed execution check that no denial/receipt was recorded. The test/source adaptations and exact `java -cp` command are the same as `QUERY-CYCLE-AND-FANOUT-20261114.md`, additionally staging the current governed-execution test under `.agent-output/query-cycle-oracle` with the same test/error namespace substitutions.
+
+A separate local Node v26.0.0 / nbb v1.4.208 reference invoked the Promise query entry with limit 2, verified that two rows caused one sink call and three rows were refused without a second sink call. SCI wraps thrown exceptions; the original reason was checked in `ex-cause`. The first probe incorrectly checked the wrapper's ex-data and failed; the corrected probe passed. nbb printed `Downloading dependencies... Extracting dependencies... Done.` on first execution; the downloaded artifact set is unknown. This is a local oracle, not CI, Native, durable storage or execution-budget evidence. A governed Worker regression was added but has not been run under its compiled ClojureScript test runner.
+
+Source SHA-256 `7d38fb251dd560c3924341ccb4d5f03d28df1d667b814c79f4838bb8cbf6bde6`; test hashes: query `0057fd78f60e3ef194d92a311664ea58a519213e4914db6cbeb4a6c3855f734d`, governed JVM `8c6ec6112bd8623a45610f7a6ae44da23ae2a9f61e4a187cec01be0dee95160d`, Worker `166e248906c1232a0d6f3193f986123293b211a0c121555c3aa63da8f9895c7a`.
+
+Promise probe, from repo root with staged source paths:
+
+```sh
+nbb -cp '.agent-output/query-cycle-oracle:.agent-output/key-registry-oracle/guest-readback/cp6:.agent-output/key-registry-oracle/guest-readback/cp7' -e '(require (quote [kotobase.authorized-query :as q])) (def compiled {:query {:limit 2} :decision {} :provenance {}}) (def calls (atom 0)) (defn sink [_] (swap! calls inc) (js/Promise.resolve {:receipt/durable? true :receipt/cid "c"})) (-> (q/execute-async! (fn [_ _] (js/Promise.resolve [1 2])) sink compiled) (.then (fn [r] (assert (= [1 2] (:rows r))) (q/execute-async! (fn [_ _] (js/Promise.resolve [1 2 3])) sink compiled))) (.then (fn [_] (throw (js/Error. "unexpected success")))) (.catch (fn [e] (assert (= :result-limit-exceeded (:kotobase.query/reason (ex-data (ex-cause e))))) (assert (= 1 @calls)) (println "async result limit: pass"))))'
+```

@@ -1,0 +1,25 @@
+# Linked authority and Forest receipt after guest reboot, 2026-11-14
+
+Candidate `708e49a8eb8f3dd4e4ea7e8707247401b307a9b0`. A dedicated Lima Ubuntu ARM guest used the host-created signed Prolly/Forest basis and frontier from `GOVERNED-REGISTRY-GUEST-REBOOT-20261114.md`. A new guest-local Otehon Forest store persisted the causal decision commit, scoped nonce and one Kotobase commit containing an execution receipt, authority receipt and signed link. The causal trust algorithm, Dango fixture policy and Datalog ran; the test issuer's domain-separated Ed25519 attestation covers the authority commit CID, tenant and epoch. Keys, identity, grants, time, trust inputs and host verifier are fixtures. `linked-ids.edn` in the test output is a fixture locator, not an authenticated anti-rollback witness.
+
+## Writer environment
+
+The release zip `forest-v0.39.0-linux-amd64.zip` SHA-256 `81224a9efed00353ec3c6cc5197f26abfdf48ed9458c1ce72b612e825d5bb64a` and extracted executable SHA-256 `7af03845db7324da80c5bc2848fe6897303b39cbac8bb701675e57ad82033ba0` match `nixos/otehon/storage/reboot-check.nix` in Awai OS. Ubuntu ARM QEMU user 11.0.3 ran the Linux x86_64 executable with guest base `-B 0x800000000000`; default/lower bases segfaulted. A guest-only binfmt wrapper selected this interpreter. Ubuntu x86 libc 2.44-1ubuntu2.1 and libgcc 16.2.0-3ubuntu1 were extracted into a RAM-backed interpreter root. Their observed package SHA-256 values are `1db945b9558d118d2507c48b355b99336e696730fd33b6b3b9d95ffb366e84ff` and `6d0b3779d578ffc598c26678ea26228b20880044742f44dcd78b2556fdc97d07`; their direct downloads were not independently package-signature qualified. QEMU package SHA-256 was `2b6aef95b13143cb1a44a95c7e275cccd85fee3d809b95a37a4238f7a31b24cd`. QEMU executable SHA-256 was `66497b6efd488ba2fe79655a17b6180f959b99f04b257468a379d327a7f7b3bd`. This is emulated hosted Otehon, not Native.
+
+Guest JRE OpenJDK 21.0.13.0.3 and Clojure 1.12.5 used the staged source/jar layout in the earlier guest report plus `link-candidate` containing the five candidate source files copied as `.cljc`. `candidate.sha` verifies their exact bytes; they match candidate revision. The guest script `governed_linked_guest_forest.clj` SHA-256 is `b342f3c857fe55c0d2aa316390c8676f4c0fb61bd2c8a490606fad2bd7586262`.
+
+From the guest, with `root=$HOME/awai-native-forest/guest-registry-recovery` and `ram=/dev/shm/awai-174-emulated-writer`, set `SIGNED_BASIS_OUTPUT=$root/data/basis`, `GROUP_FOREST_STORE=$root/data/basis/store`, `FRONTIER_FOREST_OUTPUT=$root/data/frontier`, `BOUND_RECEIPT_OUTPUT=$root/data/linked-authority`, `FOREST_TOOL=$ram/forest-v0.39.0/forest-tool`, `LINKED_STAGE=$ram/stage`, `LINKED_MODE=write`. From `$root/app`, invoke `java -Xmx512m -cp "$root/jars/*:$root/link-candidate:$root/cp0:$root/cp1:$root/cp2:$root/cp3:$root/cp4:$root/cp5:$root/cp6:$root/cp7:$root/app/nixos/otehon/storage/src:$root/app/nixos/otehon/storage/vendor/apex/src:$root/app/nixos/otehon/storage/vendor/apex-car/src" clojure.main linked-guest.clj`. The output directory must be new; staging must be an existing real directory. The tool and stage were RAM-backed, the store was on guest disk.
+
+```clojure
+{:mode :write, :signed-authority :verified, :rows 1, :records 3, :receipt "bafyreihn5m4ixtesoaag3unvdbbvye7vx7utchdbww57moikr6lomm2to4", :commit "bafyreiabifmz6s3uit455lqmw3vw22rwvzdyz5yv4wqoteadhonuakng5i", :pass true}
+```
+
+A fresh JVM then set `LINKED_MODE=replay` and `FOREST_TOOL` to a nonexistent path: it read the persisted authority and linked evidence, verified the authority attestation, link and execution receipt signature, refused reuse of the nonce and checked the root stayed unchanged. All processes exited. Before guest restart, all 10 staged tool hashes matched the above tool hash. The unique CAR/Forest/log files were retained in `stages-without-duplicate-tools.tar` SHA-256 `6b079634415586084d7a0d9ff159f73a364ea6224ca175cb075cb0c7afd752d2`; duplicate release tools and the downloaded package bytes lived only in RAM and were lost on reboot. Their hashes and source descriptions were retained, not their bytes. The tar, candidate/store hash manifests, boot IDs and outputs are preserved in task scratch and guest `linked-evidence`.
+
+After `sync`, clean stop and start of this guest changed boot ID from `68a68574-fa14-4fed-98cd-bb5ad1172371` to `dad22381-3441-44ea-9824-61ce48863b97`. A fresh JVM repeated `LINKED_MODE=replay` with **both** `FOREST_TOOL` and `LINKED_STAGE` pointing to nonexistent paths. Candidate and persistent-store SHA-256 manifests matched before and after; output:
+
+```clojure
+{:mode :replay, :signed-authority :verified, :replay :refused, :root :unchanged, :records 3, :pass true}
+```
+
+This proves this guest's clean OS reboot, guest page-cache loss and fixture readback after a guest-local Forest write. It does not prove host cache loss, physical power interruption, independent nodes, production authority/keys, anti-rollback, Native, CI, or a new allowed query after reboot. The separate authority, frontier and nonce/receipt state does not acquire cross-store transaction semantics from this test.
