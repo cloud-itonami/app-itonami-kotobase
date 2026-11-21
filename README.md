@@ -9,8 +9,10 @@ this library; kotobase does not depend on it or on any particular service, host 
 ([ADR 0050](https://github.com/network-awai/network-awai-apex/blob/main/docs/adr/0050-kotobase-is-a-library-yataverse-is-the-service.md), owner decision 2026-11-21).
 
 Text below that speaks of `kotobase.net` as a host or an "official" service path predates that decision.
-`kotobase.net` does not resolve in DNS (checked 2026-11-21); read those passages as "a service that uses this
-library". Rewriting them is open work (ADR 0050 §4).
+The `kotobase.net` apex and its capability hosts (`datomic.`, `sparql.`, `s3.` and the like) have no address
+record (checked 2026-11-21); read those passages as "a service that uses this library". Correction: an earlier
+version of this note said `kotobase.net` does not resolve in DNS. The zone exists, mail is routed for it, and
+`wiki.kotobase.net` is a running service. Rewriting them is open work (ADR 0050 §4).
 
 `kotobase.disclosure-grant` adds recipient-bound key delivery to the encrypted
 CID plane. `release!` and `release-async!` verify an owner-rooted delegation
