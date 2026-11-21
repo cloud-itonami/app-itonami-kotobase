@@ -1,5 +1,17 @@
 # kotobase
 
+## Position: a library
+
+kotobase is a **library**: datoms, a signed immutable commit DAG, queries and their verification. It has no
+host, is not deployed, and holds no user state; callers pass storage in through host ports. The **service** that
+stores and serves blocks is Yataverse (`network-awai/app-itonami-yataverse`, `yataverse.com`), which may depend on
+this library; kotobase does not depend on it or on any particular service, host or mutable-ref service
+([ADR 0050](https://github.com/network-awai/network-awai-apex/blob/main/docs/adr/0050-kotobase-is-a-library-yataverse-is-the-service.md), owner decision 2026-11-21).
+
+Text below that speaks of `kotobase.net` as a host or an "official" service path predates that decision.
+`kotobase.net` does not resolve in DNS (checked 2026-11-21); read those passages as "a service that uses this
+library". Rewriting them is open work (ADR 0050 §4).
+
 `kotobase.disclosure-grant` adds recipient-bound key delivery to the encrypted
 CID plane. `release!` and `release-async!` verify an owner-rooted delegation
 chain and a signed, audience-bound request; check current policy/epoch and a

@@ -3,6 +3,12 @@
 The workspace rules in com-junkawasaki/root `AGENTS.md` apply: CDCI is
 stopped, and when it restarts it runs Amu selfhost and Kotoba native gates only.
 
+## kotobase is a library
+
+kotobase is a library, not a service or a host ([ADR 0050](https://github.com/network-awai/network-awai-apex/blob/main/docs/adr/0050-kotobase-is-a-library-yataverse-is-the-service.md), owner decision 2026-11-21).
+Do not add a deploy target, a `kotobase.net` host or service-side state here. Service work (storage, delivery,
+authentication, receipts, public hosts) belongs to Yataverse, which depends on this library, never the reverse.
+
 ## CI/CD: no JVM, no nbb
 
 Owner decision 2026-10-22: the JVM and nbb (Node.js) are not used, so they are
